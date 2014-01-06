@@ -1,0 +1,20 @@
+{
+    "name"   : "committed",
+    "version": "0.0.1",
+    "private": false,
+    "author" : "chris.hinds@gmail.com",
+    "repository": {
+      "type" : "git",
+      "url"  : "https://github.com/chrishinds/committed"
+    },
+    "scripts" : {
+        "test"  : "./node_modules/.bin/coffee --compile . .; ./node_modules/.bin/mocha --reporter spec --async-only"
+    },
+    "dependencies": {
+        "async"                     : "0.2.8"
+    },
+    "devDependencies": {
+        "coffee-script"             : "1.6.3",
+        "mocha"                     : "1.9.0"
+    }
+}

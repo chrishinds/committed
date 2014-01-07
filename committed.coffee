@@ -1,17 +1,17 @@
 async = require 'async'
 
-_started ?= false
-_queues ?= null
-_db ?= null
-_registry ?= {}
+_started = false
+_queues = null
+_db = null
+_registry = {}
 
-_softwareVersion ?= null
-_queueCountersCollection ?= null
-_transactionsCollection ?= null
+_softwareVersion = null
+_queueCountersCollection = null
+_transactionsCollection = null
 
 
 exports.start = (db, softwareVersion, done) ->
-    if _started 
+    if _started
         return done( new Error("committed has already been started") )
     _softwareVersion = softwareVersion
     _db = db
@@ -39,7 +39,7 @@ exports.start = (db, softwareVersion, done) ->
         #position of -1 so will be attempted first
         _transactionsCollection.find({status: 'Processing'}, {snapshot: true}).sort 'position', 1, (err, transactions) ->
             if err? then return done(err, null)
-            #do the rollback quietly, we dont' want an error to interrupt the async.series
+            #do the rollback quietly, we don't want an error to interrupt the async.series
             async.eachSeries transactions, _quietly(rollback), done
 
 
@@ -61,7 +61,7 @@ exports.start = (db, softwareVersion, done) ->
         #GlobalLock queue, others will be created as needed. We create the
         #GlobalLock queue here at the end of start because stop will reset the
         #drain (for good reason) and so start needs to put it back.
-        _queues = 
+        _queues =
             GlobalLock: async.queue(commit, 1)
         _queues.GlobalLock.drain = () ->
             #if our global lock queue is now empty, make sure to restart the other queues
@@ -73,7 +73,7 @@ exports.start = (db, softwareVersion, done) ->
 
 #to end it all: we should stop accepting new transactions and drain off all the queues
 #this should include draining the GlobalLock queue, and we should be careful to respect how _started is used by GlobalLock
-export.stop = (done) ->
+exports.stop = (done) ->
     #stop accepting new transactions
     _started = false
     #drain every queue we have available (even the GlobalLock)
@@ -85,7 +85,7 @@ _drainQueues = (queues, done) ->
     tasks = []
     for name in queues
         do (name) ->
-            tasks.push (done) -> 
+            tasks.push (done) ->
                 if _queues[name].length is 0
                     #if queue is empty then nothing more to do
                     return done(null, null)
@@ -108,7 +108,7 @@ exports.register = (name, fnOrObj) ->
     key = ancestors.pop() #modifies ancestors, obv
     for ancestor in ancestors
         parent = parent[ancestor]
-        if not parent? 
+        if not parent?
             raise new Error("during register: path #{name} doesn't exist in registry: #{JSON.stringify(_registry)}")
     if parent[key]?
         raise new Error("during register: path #{name} already exists in registry: #{JSON.stringify(_registry)}")
@@ -118,15 +118,15 @@ exports.register = (name, fnOrObj) ->
 
 _queuePosition = (queueName, done) ->
     #findAndModify will return the old object, not the updated one
-    _queueCountersCollection.findAndModify( 
-        {queue: queueName}, 
-        {}, 
-        {$inc:{nextPosition: 1}, $setOnInsert: {nextPosition: 0}}, 
+    _queueCountersCollection.findAndModify(
+        {queue: queueName},
+        {},
+        {$inc:{nextPosition: 1}, $setOnInsert: {nextPosition: 0}},
         {upsert: True, w: 1, journal: true},
         (err, doc) ->
             if err? then return done(err, null)
             done(null, doc.nextPosition)
-    ) 
+    )
 
 
 _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
@@ -155,7 +155,7 @@ exports.sequentially = (transaction, done) ->
 
 
 exports.immediately = (transaction, done) ->
-    #no queue necessary, commit straight away, useful for inserts, but where you need a transaction as an audit record. 
+    #no queue necessary, commit straight away, useful for inserts, but where you need a transaction as an audit record.
     # but as above, respect _started, and fail otherwise.
     if transaction.queue?
         return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it"))
@@ -171,7 +171,7 @@ exports.immediately = (transaction, done) ->
             return done(null, 'Failed')
 
 
-exports.withGlobalLock = (transaction) -> 
+exports.withGlobalLock = (transaction) ->
     #useful if you want to safely update fixtures, or do aggregate calculations.
     # magic "GlobalLock" queue, with special drain function, that's set up during start
     if transaction.queue isnt "GlobalLock" then return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
@@ -215,7 +215,7 @@ execute = (instructions, done) ->
             iteratorDone(err)
         #call the function itself
         applyToRegistered instruction.name, fnArgs
-    #run instructions in parallel 
+    #run instructions in parallel
     async.each instructions, iterator, (err) ->
         done(err, result)
 
@@ -223,7 +223,9 @@ execute = (instructions, done) ->
 _quietly = (fn) ->
     return (args..., done) ->
         quietDone = (err, result) ->
-            console.log "error suppressed, probably during committed.start: #{JSON.stringify err}" #this needs to go out to some kind of error notification...
+            if err?
+                #this needs to go out to some kind of error notification...
+                console.log "error suppressed, probably during committed.start: #{JSON.stringify err}"
             done(null, result)
         return fn(args..., quietDone)
 
@@ -266,7 +268,7 @@ rollback = (transaction, failStatus, done) ->
             #we used the length of transaction.errors above to tell whether
             #there were errors during a commit, now that's done we can add any
             #errors impled by the rollback
-        if err? 
+        if err?
             _pushTransactionError transaction, err, () ->
                 done(err, transaction.status)
         else
@@ -281,10 +283,10 @@ commit = (transaction, done) ->
         if err? then return done(err, null)
         #transaction is now at 'Processing' status, we can now execute its instructions.
         execute transaction.instructions, (err, result) ->
-            if err? 
+            if err?
                 _pushTransactionError transaction, err, () ->
                     #if there's been an error in execution then we need to rollback everything
-                    rollback transaction, err, done 
+                    rollback transaction, err, done
             else if result
                 #then the transaction has succeeded.
                 _updateTransactionStatus transaction, 'Processing', 'Committed', (err) ->
@@ -299,13 +301,13 @@ commit = (transaction, done) ->
 #THESE FUNCTION PROBABLY WANT TO BE REVISION "AWARE".
 
 # should be possible to do committed.register('db', committed.db) to use these fns
-exports.db =  
+exports.db =
     updateOne: (db, transactionData, collectionName, selector, values, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err)
             collection.update selector, values, {w:1, journal: true, upsert:false, multi: false, serializeFunctions: false}, (err, updated) ->
                 if err? then return done(err, null)
-                if updated isnt 1 return done( null, false) #the instruction has failed
+                if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
 
     insert: (db, transactionData, collectionName, documents, done) ->

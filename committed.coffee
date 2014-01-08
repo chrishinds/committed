@@ -23,17 +23,17 @@ exports.start = (db, softwareVersion, done) ->
         _db.createCollection 'transactions', {w:1, journal: true}, (err, collection) ->
             if err?
                 return done(err, null)
-            #NEED TO PUT SOME INDEXES ON TRANSACTION EG ON STATUS ***************************************************************************
             _transactionsCollection = collection
-            return done(null, null)
+            _db.ensureIndex 'transactions', {status:1}, {w:1, journal: true}, done
+
 
     tasks.push (done) ->
         #create the transactionsCollection
-        _db.createCollection 'queueCounters', {w:1, journal: true}, (err, collection) ->
+        _db.createCollection 'queueCounters', {w:1, journal: true, autoIndexId: false}, (err, collection) ->
             if err?
                 return done(err, null)
             _queueCountersCollection = collection
-            return done(null, null)
+            _db.ensureIndex 'queueCounters', {queue:1}, {w:1, journal: true}, done
 
     tasks.push (done) ->
         #find any tasks in the transaction queues which are stuck at
@@ -143,6 +143,7 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
     if not _queues[queueName]?
         _queues[queueName] = async.queue(commit, 1) #the commit fn will be the queue worker; only one worker per queue for sequentiality
         #note: we could add a drain to this queue to delete on completion. this would minimise memory at the expense of speed.
+    transaction.enqueuedAt = new Date()
     _queues[queueName].push transaction, done
 
 
@@ -267,18 +268,26 @@ _pushTransactionError = (transaction, error, done) ->
         done()
 
 _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
-    _transactionsCollection.update {_id: transaction._id, status: fromStatus}, {$set: {status: toStatus, softwareVersion: _softwareVersion}}, {w:1, journal: true}, (err, updated) ->
-        switch
-            when err?
-                _pushTransactionError transaction, err, () ->
-                    return done(err)
-            when updated isnt 1
-                #then the transaction in the database doesn't match the one we have in memory; we're in bad shape so bail out
-                updateError = new Error('exactly one transaction must be updated when moving to Processing status')
-                _pushTransactionError transaction, updateError, () ->
-                    return done(updateError)
-            else
-                return done(null)
+    _transactionsCollection.update {_id: transaction._id, status: fromStatus},
+        {$set: {
+            status: toStatus
+            softwareVersion: _softwareVersion
+            lastUpdate: new Date()
+            enqueuedAt: transaction.enqueuedAt
+            startedAt: transaction.startedAt
+        }},
+        {w:1, journal: true}, (err, updated) ->
+            switch
+                when err?
+                    _pushTransactionError transaction, err, () ->
+                        return done(err)
+                when updated isnt 1
+                    #then the transaction in the database doesn't match the one we have in memory; we're in bad shape so bail out
+                    updateError = new Error('exactly one transaction must be updated when moving to Processing status')
+                    _pushTransactionError transaction, updateError, () ->
+                        return done(updateError)
+                else
+                    return done(null)
 
 
 #if rollback succeeds then set transaction.status = Failed; if rollback fails set to failStatus
@@ -328,6 +337,7 @@ commit = (transaction, done) ->
     #is this transaction at queued status?
     if transaction.status isnt 'Queued' then return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status}"), null )
     transaction.status = 'Processing'
+    transaction.startedAt = new Date()
     if transaction.constructor?
         #then this is a pessimistic transaction with a transaction-producing function
         [instructions, rollback] = transaction.constructor transaction.data, (err) ->
@@ -353,6 +363,16 @@ exports.db =
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
 
+    updateOneField: (db, transactionData, collectionName, selector, field, value, done) ->
+        db.collection collectionName, {strict: true}, (err, collection) ->
+            if err? then return done(err, false)
+            setter = {}
+            setter[field] = value
+            collection.update selector, {$set: setter}, {w:1, journal: true, upsert:false, multi: false, serializeFunctions: false}, (err, updated) ->
+                if err? then return done(err, null)
+                if updated isnt 1 then return done( null, false) #the instruction has failed
+                return done(null, true)
+
     insert: (db, transactionData, collectionName, documents, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
@@ -367,9 +387,8 @@ exports.transaction = (queueName) ->
         softwareVersion: _softwareVersion
         queue: queueName
         position: 1
-        startAt: new Date()
-        endAt: new Date()
-        enqueuedAt: new Date()
+        startedAt: null
+        enqueuedAt: null
         enqueuedBy: "username"
         status: "Queued"
         errors: []

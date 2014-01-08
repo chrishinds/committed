@@ -28,6 +28,14 @@ exports.start = (db, softwareVersion, done) ->
             return done(null, null)
 
     tasks.push (done) ->
+        #create the transactionsCollection
+        _db.createCollection 'queueCounters', {w:1, journal: true}, (err, collection) ->
+            if err?
+                return done(err, null)
+            _queueCountersCollection = collection
+            return done(null, null)
+
+    tasks.push (done) ->
         #find any tasks in the transaction queues which are stuck at
         #'Processing' status and roll them back rollback should then leave the
         #transaction at a 'Failed' status, which is at least safe we'll sort
@@ -74,6 +82,8 @@ exports.start = (db, softwareVersion, done) ->
 #to end it all: we should stop accepting new transactions and drain off all the queues
 #this should include draining the GlobalLock queue, and we should be careful to respect how _started is used by GlobalLock
 exports.stop = (done) ->
+    if not _started
+        return done( new Error("committed is not currently started") )
     #stop accepting new transactions
     _started = false
     #drain every queue we have available (even the GlobalLock)
@@ -86,7 +96,7 @@ _drainQueues = (queues, done) ->
     for name in queues
         do (name) ->
             tasks.push (done) ->
-                if _queues[name].length is 0
+                if _queues[name].length() is 0
                     #if queue is empty then nothing more to do
                     return done(null, null)
                 else
@@ -100,7 +110,7 @@ _drainQueues = (queues, done) ->
         done(err)
 
 
-#can raise Error
+#can throw Error
 exports.register = (name, fnOrObj) ->
     parent = _registry
     #find the parent within the registry for the given (possibly dot-separated) name
@@ -109,9 +119,9 @@ exports.register = (name, fnOrObj) ->
     for ancestor in ancestors
         parent = parent[ancestor]
         if not parent?
-            raise new Error("during register: path #{name} doesn't exist in registry: #{JSON.stringify(_registry)}")
+            throw new Error("during register: path #{name} doesn't exist in registry: #{JSON.stringify(_registry)}")
     if parent[key]?
-        raise new Error("during register: path #{name} already exists in registry: #{JSON.stringify(_registry)}")
+        throw new Error("during register: path #{name} already exists in registry: #{JSON.stringify(_registry)}")
     #set the registry to record the given function or Object
     parent[key] = fnOrObj
 
@@ -121,11 +131,11 @@ _queuePosition = (queueName, done) ->
     _queueCountersCollection.findAndModify(
         {queue: queueName},
         {},
-        {$inc:{nextPosition: 1}, $setOnInsert: {nextPosition: 0}},
-        {upsert: True, w: 1, journal: true},
+        {$inc:{nextPosition: 1}},
+        {upsert: true, w: 1, journal: true},
         (err, doc) ->
             if err? then return done(err, null)
-            done(null, doc.nextPosition)
+            done(null, doc.nextPosition ? 0)
     )
 
 
@@ -204,11 +214,11 @@ applyToRegistered = (name, fnArgs) ->
 
 
 #done(err, result)
-execute = (instructions, done) ->
+execute = (instructions, data, done) ->
     result = true
     iterator = (instruction, iteratorDone) ->
         #assemble the arguments for the call of one of our registered functions
-        fnArgs = [_db, transaction.data].concat(instruction.arguments)
+        fnArgs = [_db, data].concat(instruction.arguments)
         #add the callback
         fnArgs.push (err, iteratorResult) ->
             if iteratorResult is false then result = false
@@ -231,7 +241,7 @@ _quietly = (fn) ->
 
 _pushTransactionError = (transaction, error, done) ->
     transaction.errors.push error
-    _transactionsCollection.update {_id: transaction._id}, {$push: {errors: error}}, {w:1, journal: true}, (err, updated) ->
+    _transactionsCollection.update {_id: transaction._id}, {$push: {errors: error.toString()}}, {w:1, journal: true}, (err, updated) ->
         #log these errors but don't pass them up
         if err? then console.log "error saving error to transaction: #{err}"
         done()
@@ -254,35 +264,40 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
 #if rollback succeeds then set transaction.status = Failed; if rollback fails set to failStatus
 rollback = (transaction, failStatus, done) ->
     if transaction.status isnt 'Processing' then return done( new Error("can't rollback a transaction that isn't at 'Processing' status"), null)
-    execute transaction.rollback, (err, result) ->
+    execute transaction.rollback, transaction.data, (rollbackErr, result) ->
         failed = err? or result is false
         switch
             when failed and transaction.errors.length > 0
-                _updateTransactionStatus transaction, 'Processing', 'CatastropheCommitErrorRollbackError'
+                newStatus = 'CatastropheCommitErrorRollbackError'
             when failed and transaction.errors.length is 0
-                _updateTransactionStatus transaction, 'Processing', 'CatastropheCommitFailedRollbackError'
+                newStatus = 'CatastropheCommitFailedRollbackError'
             when not failed and transaction.errors.length > 0
-                _updateTransactionStatus transaction, 'Processing', 'FailedCommitErrorRollbackOk'
+                newStatus = 'FailedCommitErrorRollbackOk'
             when not failed and transaction.errors.length is 0
-                _updateTransactionStatus transaction, 'Processing', 'Failed'
-            #we used the length of transaction.errors above to tell whether
-            #there were errors during a commit, now that's done we can add any
-            #errors impled by the rollback
-        if err?
-            _pushTransactionError transaction, err, () ->
-                done(err, transaction.status)
-        else
-            done(null, transactions.status)
+                newStatus = 'Failed'
+
+        #we used the length of transaction.errors above to tell whether
+        #there were errors during a commit, now that's done we can add any
+        #errors implied by the rollback
+        _updateTransactionStatus transaction, 'Processing', newStatus, (statusErr) ->
+            if statusErr?
+                done(statusErr, newStatus)
+            else if rollbackErr?
+                _pushTransactionError transaction, rollbackErr, () ->
+                    done(err, newStatus)
+            else
+                done(null, newStatus)
 
 
 commit = (transaction, done) ->
+    console.log _queues['contact'].length()
     #is this transaction at queued status?
     if transaction.status isnt 'Queued' then return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status}"), null )
     transaction.status = 'Processing'
     _updateTransactionStatus transaction, 'Queued', 'Processing', (err) ->
         if err? then return done(err, null)
         #transaction is now at 'Processing' status, we can now execute its instructions.
-        execute transaction.instructions, (err, result) ->
+        execute transaction.instructions, transaction.data, (err, result) ->
             if err?
                 _pushTransactionError transaction, err, () ->
                     #if there's been an error in execution then we need to rollback everything
@@ -304,7 +319,7 @@ commit = (transaction, done) ->
 exports.db =
     updateOne: (db, transactionData, collectionName, selector, values, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err)
+            if err? then return done(err, false)
             collection.update selector, values, {w:1, journal: true, upsert:false, multi: false, serializeFunctions: false}, (err, updated) ->
                 if err? then return done(err, null)
                 if updated isnt 1 then return done( null, false) #the instruction has failed
@@ -312,7 +327,23 @@ exports.db =
 
     insert: (db, transactionData, collectionName, documents, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err, null)
+            if err? then return done(err, false)
             collection.insert documents, {w:1, journal: true, serializeFunctions: false}, (err, objects) ->
                 if err? then return done(err, null)
                 return done(null, true)
+
+
+exports.transaction = () ->
+    transaction =
+        softwareVersion: _softwareVersion
+        queue: "name"
+        position: 1
+        startAt: new Date()
+        endAt: new Date()
+        enqueuedAt: new Date()
+        enqueuedBy: "username"
+        status: "Queued"
+        errors: []
+        data: {}
+        instructions: []
+        rollback: []

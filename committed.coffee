@@ -29,7 +29,7 @@ exports.start = (db, softwareVersion, done) ->
 
     tasks.push (done) ->
         #create the transactionsCollection
-        _db.createCollection 'queueCounters', {w:1, journal: true, autoIndexId: false}, (err, collection) ->
+        _db.createCollection 'queueCounters', {w:1, journal: true}, (err, collection) ->
             if err?
                 return done(err, null)
             _queueCountersCollection = collection
@@ -229,6 +229,7 @@ applyToRegistered = (name, fnArgs) ->
     for key in name.split('.')
         found = found[key]
         if not found?
+            done = fnArgs[fnArgs.length - 1]
             return done( new Error("during applyToRegistered: path #{name} doesn't exist in registry: #{JSON.stringify(_registry)}") )
     # db is always the first argument for any registered function
     found.apply(@, fnArgs)
@@ -245,6 +246,7 @@ execute = (instructions, data, done) ->
             if iteratorResult is false then result = false
             iteratorDone(err)
         #call the function itself
+        console.log fnArgs
         applyToRegistered instruction.name, fnArgs
     #run instructions in parallel
     async.each instructions, iterator, (err) ->

@@ -79,8 +79,9 @@ exports.start = (db, softwareVersion, done) ->
         return done(null)
 
 
-#to end it all: we should stop accepting new transactions and drain off all the queues
-#this should include draining the GlobalLock queue, and we should be careful to respect how _state is used by GlobalLock
+#to end it all: we should stop accepting new transactions and drain off all the
+#queues this should include draining the GlobalLock queue, and we should be
+#careful to respect how _state is used by GlobalLock
 exports.stop = (done) ->
     if _state isnt 'started'
         return done( new Error("committed is not currently started") )
@@ -141,8 +142,10 @@ _queuePosition = (queueName, done) ->
 
 _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
     if not _queues[queueName]?
-        _queues[queueName] = async.queue(commit, 1) #the commit fn will be the queue worker; only one worker per queue for sequentiality
-        #note: we could add a drain to this queue to delete on completion. this would minimise memory at the expense of speed.
+        #the commit fn will be the queue worker; only one worker per queue for sequentiality
+        _queues[queueName] = async.queue(commit, 1)
+        #note: we could add a drain to this queue to delete on completion. this
+        #would minimise memory at the expense of speed.
     transaction.enqueuedAt = new Date()
     _queues[queueName].push transaction, done
 
@@ -154,8 +157,10 @@ exports.sequentially = (transaction, done) ->
         else
             return done(null, 'Failed')
     #check we've got a valid queuename in the transaction.
-    if transaction.queue is "GlobalLock" then return done( new Error("Can't queue a transaction for GlobalLock using the committed.sequentially function"), null)
-    if not transaction.queue?.length then return done( new Error("must have a transaction.queue parameter to use committed.sequentially"), null)
+    if transaction.queue is "GlobalLock"
+        return done( new Error("Can't queue a transaction for GlobalLock using the committed.sequentially function"), null)
+    if not transaction.queue?.length
+        return done( new Error("must have a transaction.queue parameter to use committed.sequentially"), null)
     #if we have got here then we intend at least to save the transaction, so set some essential values
     transaction.status = if _state is 'started' then "Queued" else "Failed"
     #this includes setting the queue position
@@ -195,7 +200,8 @@ exports.immediately = (transaction, done) ->
 exports.withGlobalLock = (transaction, done) ->
     #useful if you want to safely update fixtures, or do aggregate calculations.
     # magic "GlobalLock" queue, with special drain function, that's set up during start
-    if transaction.queue isnt "GlobalLock" then return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
+    if transaction.queue isnt "GlobalLock"
+        return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
 
     enqueue = () ->
         if _state is 'stopped'
@@ -240,13 +246,14 @@ execute = (instructions, data, done) ->
     result = true
     iterator = (instruction, iteratorDone) ->
         #assemble the arguments for the call of one of our registered functions
-        fnArgs = [_db, data].concat(instruction.arguments)
+        fnArgs = [_db, data]
+        if instruction.arguments?
+            fnArgs = fnArgs.concat(instruction.arguments)
         #add the callback
         fnArgs.push (err, iteratorResult) ->
             if iteratorResult is false then result = false
             iteratorDone(err)
         #call the function itself
-        console.log fnArgs
         applyToRegistered instruction.name, fnArgs
     #run instructions in parallel
     async.each instructions, iterator, (err) ->
@@ -294,9 +301,10 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
 
 #if rollback succeeds then set transaction.status = Failed; if rollback fails set to failStatus
 rollback = (transaction, failStatus, done) ->
-    if transaction.status isnt 'Processing' then return done( new Error("can't rollback a transaction that isn't at 'Processing' status"), null)
+    if transaction.status isnt 'Processing'
+        return done( new Error("can't rollback a transaction that isn't at 'Processing' status"), null)
     execute transaction.rollback, transaction.data, (rollbackErr, result) ->
-        failed = err? or result is false
+        failed = rollbackErr? or result is false
         switch
             when failed and transaction.errors.length > 0
                 newStatus = 'CatastropheCommitErrorRollbackError'
@@ -315,7 +323,7 @@ rollback = (transaction, failStatus, done) ->
                 done(statusErr, newStatus)
             else if rollbackErr?
                 _pushTransactionError transaction, rollbackErr, () ->
-                    done(err, newStatus)
+                    done(rollbackErr, newStatus)
             else
                 done(null, newStatus)
 
@@ -337,7 +345,8 @@ commit = (transaction, done) ->
                 #the transaction has (legitimately) failed
                 rollback transaction, err, done
     #is this transaction at queued status?
-    if transaction.status isnt 'Queued' then return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status}"), null )
+    if transaction.status isnt 'Queued'
+        return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status}"), null )
     transaction.status = 'Processing'
     transaction.startedAt = new Date()
     if transaction.constructor?
@@ -360,7 +369,13 @@ exports.db =
     updateOne: (db, transactionData, collectionName, selector, values, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
-            collection.update selector, values, {w:1, journal: true, upsert:false, multi: false, serializeFunctions: false}, (err, updated) ->
+            options =
+                w:1
+                journal: true
+                upsert:false
+                multi: false
+                serializeFunctions: false
+            collection.update selector, values, options, (err, updated) ->
                 if err? then return done(err, null)
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
@@ -370,7 +385,13 @@ exports.db =
             if err? then return done(err, false)
             setter = {}
             setter[field] = value
-            collection.update selector, {$set: setter}, {w:1, journal: true, upsert:false, multi: false, serializeFunctions: false}, (err, updated) ->
+            options =
+                w:1
+                journal: true
+                upsert:false
+                multi: false
+                serializeFunctions: false
+            collection.update selector, {$set: setter}, options, (err, updated) ->
                 if err? then return done(err, null)
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
@@ -378,7 +399,11 @@ exports.db =
     insert: (db, transactionData, collectionName, documents, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
-            collection.insert documents, {w:1, journal: true, serializeFunctions: false}, (err, objects) ->
+            options =
+                w:1
+                journal: true
+                serializeFunctions: false
+            collection.insert documents, options, (err, objects) ->
                 if err? then return done(err, null)
                 return done(null, true)
 

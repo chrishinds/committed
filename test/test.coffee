@@ -60,6 +60,7 @@ describe 'Committed', ->
             finally
                 done()
 
+
     describe 'valid operation', ->
 
         before (done) ->
@@ -121,9 +122,18 @@ describe 'Committed', ->
 
             async.parallel tasks, done
 
-    describe.skip 'rollback', ->
+
+    describe 'rollback', ->
 
         before (done) ->
+            failMethod = (db, transactionData, done) ->
+                done(null, false)
+            committed.register 'failMethod', failMethod
+
+            errorMethod = (db, transactionData, done) ->
+                done 'Supposed to fail', false
+            committed.register 'errorMethod', errorMethod
+
             committed.start _db, 'testSoftwareVersion', (err) ->
                 err?.should.be.false
                 _db.createCollection 'rollbackTest', done
@@ -131,27 +141,89 @@ describe 'Committed', ->
         after (done) ->
             committed.stop done
 
-        it 'should rollback a failed transaction', (done) ->
-            failMethod = (db, transactionData, done) ->
-                console.log done
-                done 'Supposed to fail', false
-            committed.register 'failMethod', failMethod
-
+        it 'should rollback an errored transaction and return status FailedCommitErrorRollbackOk', (done) ->
             insertId = uuid.v4()
 
             transaction = committed.transaction 'rollbackTest'
             transaction.instructions.push
                 name: 'db.insert'
-                arguments: ['rollbackTest', {id: insertId, inserted: true, rolledback: false}]
+                arguments: ['rollbackTest', {id: insertId, rolledback: false}]
+            transaction.instructions.push
+                name: 'errorMethod'
+            transaction.rollback.push
+                name: 'db.updateOneField'
+                arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
+
+            committed.sequentially transaction, (err, status) ->
+                status.should.equal 'FailedCommitErrorRollbackOk'
+                # 'manually' check that we rolled back
+                _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
+                    count.should.equal 1
+                    done(err)
+
+        it 'should rollback a failed transaction and return status Failed', (done) ->
+            insertId = uuid.v4()
+
+            transaction = committed.transaction 'rollbackTest'
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['rollbackTest', {id: insertId, rolledback: false}]
             transaction.instructions.push
                 name: 'failMethod'
             transaction.rollback.push
                 name: 'db.updateOneField'
-                arguments: {id: insertId}, 'rolledback', true
+                arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
 
             committed.sequentially transaction, (err, status) ->
-                should.should.be.string 'Failed'
-                done()
+                status.should.equal 'Failed'
+                # 'manually' check that we rolled back
+                _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
+                    count.should.equal 1
+                    done(err)
+
+        it 'should report a catastrophe if a rollback fails after an error', (done) ->
+            insertId = uuid.v4()
+
+            transaction = committed.transaction 'rollbackTest'
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['rollbackTest', {id: insertId, rolledback: false}]
+            transaction.instructions.push
+                name: 'errorMethod'
+            transaction.rollback.push
+                name: 'db.updateOneField'
+                arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
+            transaction.rollback.push
+                name: 'errorlMethod'
+
+            committed.sequentially transaction, (err, status) ->
+                status.should.equal 'CatastropheCommitErrorRollbackError'
+                # 'manually' check that we rolled back
+                _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
+                    count.should.equal 1
+                    done(err)
+
+        it 'should report a catastrophe if a rollback fails after a failure', (done) ->
+            insertId = uuid.v4()
+
+            transaction = committed.transaction 'rollbackTest'
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['rollbackTest', {id: insertId, rolledback: false}]
+            transaction.instructions.push
+                name: 'failMethod'
+            transaction.rollback.push
+                name: 'db.updateOneField'
+                arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
+            transaction.rollback.push
+                name: 'failMethod'
+
+            committed.sequentially transaction, (err, status) ->
+                status.should.equal 'CatastropheCommitFailedRollbackError'
+                # 'manually' check that we rolled back
+                _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
+                    count.should.equal 1
+                    done(err)
 
     describe 'error handling', ->
 

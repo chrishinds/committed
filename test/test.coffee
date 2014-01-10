@@ -194,7 +194,7 @@ describe 'Committed', ->
                 name: 'db.updateOneField'
                 arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
             transaction.rollback.push
-                name: 'errorlMethod'
+                name: 'errorMethod'
 
             committed.sequentially transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitErrorRollbackError'

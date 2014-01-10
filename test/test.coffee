@@ -38,7 +38,7 @@ describe 'Committed', ->
 
         it 'should stop without error only if started', (done) ->
             committed.stop (err) ->
-                err?.should.be.false
+                should.not.exist err
                 committed.stop (err) ->
                     err.message.should.have.string 'committed is not currently started'
                     done()
@@ -65,7 +65,7 @@ describe 'Committed', ->
 
         before (done) ->
             committed.start _db, 'testSoftwareVersion', (err) ->
-                err?.should.be.false
+                should.not.exist err
                 _db.createCollection 'validOpsTest', done
 
         after (done) ->
@@ -89,14 +89,14 @@ describe 'Committed', ->
 
             async.times 100, task, (err) ->
                 transactionTime = new Date().getTime() - start
-                err?.should.be.false
+                should.not.exist err
 
                 task = (n, next) ->
                     _db.collection('validOpsTest').insert {value: n + 20}, {w:1, journal: true, upsert:false, multi: false, serializeFunctions: false}, next
 
                 start = new Date().getTime()
                 async.timesSeries 100, task, (err) ->
-                    err?.should.be.false
+                    should.not.exist err
                     directTime = new Date().getTime() - start
 
                     (transactionTime / directTime).should.be.below 4
@@ -116,12 +116,76 @@ describe 'Committed', ->
                                     name: 'db.insert'
                                     arguments: ['validOpsTest', {t:t, q:q}]
                                 committed.sequentially transaction, (err, status) ->
-                                    err?.should.be.false
+                                    should.not.exist err
                                     status.should.be.string 'Committed'
                                     done()
 
             async.parallel tasks, done
 
+    describe 'global lock', ->
+
+        before (done) ->
+            blockingMethod = (db, transactionData, finishObj, done) ->
+                untilTest = () -> finishObj.finished
+                untilFn = (done) ->
+                    # just sleep for a bit
+                    setTimeout done, 100
+                async.until untilTest, untilFn, () ->
+                    done()
+            committed.register 'blockingMethod', blockingMethod
+
+            committed.start _db, 'testSoftwareVersion', (err) ->
+                should.not.exist err
+                _db.createCollection 'globalLockTest', done
+
+        after (done) ->
+            committed.stop done
+
+        it 'should close and reopen normal queues when processing a GlobalLock transaction', (done) ->
+            finishObj = { finished: false }
+
+            globalTransaction = committed.transaction 'GlobalLock'
+            globalTransaction.instructions.push
+                name: 'blockingMethod'
+                arguments: [finishObj]
+            committed.withGlobalLock globalTransaction, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+
+                # make sure the queues are open again
+
+                nonGlobalTransaction = committed.transaction 'nonGlobal'
+                committed.sequentially nonGlobalTransaction, (err, status) ->
+                    status.should.equal 'Committed'
+                    done(err)
+
+            nonGlobalTransaction = committed.transaction 'nonGlobal'
+            committed.sequentially nonGlobalTransaction, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Failed'
+                finishObj.finished = true
+
+        it 'should suspend and resume immediate processing when processing a GlobalLock transaction', (done) ->
+            finishObj = { finished: false }
+
+            globalTransaction = committed.transaction 'GlobalLock'
+            globalTransaction.instructions.push
+                name: 'blockingMethod'
+                arguments: [finishObj]
+            committed.withGlobalLock globalTransaction, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+
+                immediateTransaction = committed.transaction()
+                committed.immediately immediateTransaction, (err, status) ->
+                    status.should.equal 'Committed'
+                    done(err)
+
+            immediateTransaction = committed.transaction()
+            committed.immediately immediateTransaction, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Failed'
+                finishObj.finished = true
 
     describe 'rollback', ->
 
@@ -135,7 +199,7 @@ describe 'Committed', ->
             committed.register 'errorMethod', errorMethod
 
             committed.start _db, 'testSoftwareVersion', (err) ->
-                err?.should.be.false
+                should.not.exist err
                 _db.createCollection 'rollbackTest', done
 
         after (done) ->
@@ -261,34 +325,40 @@ describe 'Committed', ->
                     err.message.should.have.string "Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"
                     done()
 
+            tests.push (done) ->
+                immediateTransaction = committed.transaction 'testQ'
+                committed.immediately immediateTransaction, (err) ->
+                    err.message.should.have.string "Can't call committed.immediately on a transaction which has a queue defined for it"
+                    done()
+
             async.parallel tests, done
 
 
         it 'should fail a transaction if not started', (done) ->
 
             committed.stop (err) ->
-                err?.should.be.false
+                should.not.exist err
 
                 tests = []
 
                 tests.push (done) ->
                     transaction = committed.transaction 'testQ'
                     committed.sequentially transaction, (err, status) ->
-                        err?.should.be.false
+                        should.not.exist err
                         status.should.have.string 'Failed'
                         done()
 
                 tests.push (done) ->
                     transaction = committed.transaction()
                     committed.immediately transaction, (err, status) ->
-                        err?.should.be.false
+                        should.not.exist err
                         status.should.have.string 'Failed'
                         done()
 
                 tests.push (done) ->
                     transaction = committed.transaction 'GlobalLock'
                     committed.withGlobalLock transaction, (err, status) ->
-                        err?.should.be.false
+                        should.not.exist err
                         status.should.have.string 'Failed'
                         done()
 

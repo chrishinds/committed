@@ -146,55 +146,68 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
         _queues[queueName] = async.queue(commit, 1)
         #note: we could add a drain to this queue to delete on completion. this
         #would minimise memory at the expense of speed.
-    transaction.enqueuedAt = new Date()
     _queues[queueName].push transaction, done
 
 
 exports.sequentially = (transaction, done) ->
+    transaction.enqueuedAt = new Date()
     enqueue = () ->
         if _state is 'started'
             return _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
         else
-            return done(null, 'Failed')
+            _updateTransactionStatus transaction, transaction.status, 'Failed', (err) ->
+                return done(err, 'Failed')
     #check we've got a valid queuename in the transaction.
     if transaction.queue is "GlobalLock"
         return done( new Error("Can't queue a transaction for GlobalLock using the committed.sequentially function"), null)
     if not transaction.queue?.length
         return done( new Error("must have a transaction.queue parameter to use committed.sequentially"), null)
-    #if we have got here then we intend at least to save the transaction, so set some essential values
-    transaction.status = if _state is 'started' then "Queued" else "Failed"
-    #this includes setting the queue position
-    _queuePosition transaction.queue, (err, position) ->
-        transaction.position = position
-        if transaction.constructor?
-            return enqueue()
-        else
-            return _transactionsCollection.insert transaction, (err, docs) ->
-                if err? then return done(err, null)
-                #transaction has been written to the db, we're ready to enqueue, or bail if we've failed
+
+    #Yield to the event loop before performing state check. This ensures that
+    #any drains are allowed time to run
+    setImmediate () ->
+        transaction.status = if _state is 'started' then "Queued" else "Failed"
+
+        #if we have got here then we intend at least to save the transaction, so
+        #set some essential values. This includes setting the queue position
+        _queuePosition transaction.queue, (err, position) ->
+            transaction.position = position
+            if transaction.constructor?
                 return enqueue()
+            else
+                return _transactionsCollection.insert transaction, (err, docs) ->
+                    if err? then return done(err, null)
+                    #transaction has been written to the db, we're ready to enqueue, or bail if we've failed
+                    return enqueue()
 
 
 exports.immediately = (transaction, done) ->
     #no queue necessary, commit straight away, useful for inserts, but where you need a transaction as an audit record.
     # but as above, respect _state, and fail otherwise.
+    transaction.enqueuedAt = new Date()
     go = () ->
         if _state is 'started'
             return commit transaction, done
         else
-            return done(null, 'Failed')
+            _updateTransactionStatus transaction, transaction.status, 'Failed', (err) ->
+                return done(err, 'Failed')
+
     if transaction.queue?
         return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it"))
-    transaction.status = if _state is 'started' then "Queued" else "Failed"
-    #if we set the position to -1 then during start up if we want to process an immediate task it will get done first.
-    transaction.position = -1
-    if transaction.constructor?
-        return go()
-    else
-        _transactionsCollection.insert transaction, (err, docs) ->
-            if err? then return done(err, null)
-            #transaction has been written to the db, it can be executed, immediately
+
+    #Yield to the event loop before performing state check. This ensures that
+    #any drains are allowed time to run
+    setImmediate () ->
+        transaction.status = if _state is 'started' then "Queued" else "Failed"
+        #if we set the position to -1 then during start up if we want to process an immediate task it will get done first.
+        transaction.position = -1
+        if transaction.constructor?
             return go()
+        else
+            _transactionsCollection.insert transaction, (err, docs) ->
+                if err? then return done(err, null)
+                #transaction has been written to the db, it can be executed, immediately
+                return go()
 
 
 exports.withGlobalLock = (transaction, done) ->
@@ -202,19 +215,14 @@ exports.withGlobalLock = (transaction, done) ->
     # magic "GlobalLock" queue, with special drain function, that's set up during start
     if transaction.queue isnt "GlobalLock"
         return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
-
+    transaction.enqueuedAt = new Date()
     enqueue = () ->
-        if _state is 'stopped'
-            return done(null, 'Failed')
-        else
-            #now the transaction's inserted, stop accepting new (non-global) transactions
-            _state = 'locked'
-            #drain all non-GlobalLock queues
-            _drainQueues ( name for name of _queues when name isnt 'GlobalLock' ), (err) ->
-                if err? then return done(err, null)
-                #we will rely on the special drain set up on GlobalLock made
-                #during committed.start, to restore business as usual
-                _queues['GlobalLock'].push transaction, done
+        #drain all non-GlobalLock queues
+        _drainQueues ( name for name of _queues when name isnt 'GlobalLock' ), (err) ->
+            if err? then return done(err, null)
+            #we will rely on the special drain set up on GlobalLock made
+            #during committed.start, to restore business as usual
+            _queues['GlobalLock'].push transaction, done
 
     #set essential values so the transaction can be saved
     transaction.status = if _state isnt 'stopped' then "Queued" else "Failed"
@@ -224,9 +232,21 @@ exports.withGlobalLock = (transaction, done) ->
         if transaction.constructor?
             return enqueue()
         else
+            # lock down the other queues before doing the DB operation as that
+            # will take some time
+            if _state isnt 'stopped'
+                oldState = _state
+                _state = 'locked'
+
             return _transactionsCollection.insert transaction, (err, docs) ->
-                if err? then return done(err, null)
-                return enqueue()
+                if err?
+                    # Put the state back the way we found it
+                    _state = oldState
+                    return done(err, null)
+                if _state is 'stopped'
+                    return done(null, 'Failed')
+                else
+                    return enqueue()
 
 
 
@@ -346,7 +366,7 @@ commit = (transaction, done) ->
                 rollback transaction, err, done
     #is this transaction at queued status?
     if transaction.status isnt 'Queued'
-        return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status}"), null )
+        return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status})"), null )
     transaction.status = 'Processing'
     transaction.startedAt = new Date()
     if transaction.constructor?

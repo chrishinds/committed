@@ -371,7 +371,7 @@ commit = (transaction, done) ->
     transaction.startedAt = new Date()
     if transaction.constructor?
         #then this is a pessimistic transaction with a transaction-producing function
-        [instructions, rollback] = transaction.constructor transaction.data, (err) ->
+        transaction.constructor transaction.data, (err, instructions, rollback) ->
             if err? then return done(err, null)
             #push instructions and rollaback onto whatever's already on the transaction
             transaction.instructions.push(instruction) for instruction in instructions

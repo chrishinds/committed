@@ -416,6 +416,24 @@ exports.db =
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
 
+    # like updateOneField, but takes an array of key-value pairs to update
+    updateOneFields: (db, transactionData, collectionName, selector, fieldValues, done) ->
+        db.collection collectionName, {strict: true}, (err, collection) ->
+            if err? then return done(err, false)
+            setter = {}
+            for fieldValue in fieldValues
+                setter[fieldValue.field] = fieldValue.value
+            options =
+                w:1
+                journal: true
+                upsert:false
+                multi: false
+                serializeFunctions: false
+            collection.update selector, {$set: setter}, options, (err, updated) ->
+                if err? then return done(err, null)
+                if updated isnt 1 then return done( null, false) #the instruction has failed
+                return done(null, true)
+
     insert: (db, transactionData, collectionName, documents, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)

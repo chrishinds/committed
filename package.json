@@ -1,6 +1,6 @@
 {
     "name"   : "committed",
-    "version": "0.0.4",
+    "version": "0.0.5",
     "private": false,
     "author" : "Chris Hinds <chris.hinds@gmail.com>",
     "repository": {
@@ -22,5 +22,6 @@
     },
     "description": "A framework for creating sequential, auditable, failure-resistant transactions that match the semantics of your data whilst maximising asynchronisity.",
     "contributors": ["Simon Bond <simon.bond@gmail.com>"],
-    "keywords": ["Transaction", "MongoDB", "Audit", "Commit", "Rollback", "Failure"]
+    "keywords": ["Transaction", "MongoDB", "Audit", "Commit", "Rollback", "Failure"],
+    "main":"./committed.js"
 }

@@ -21,5 +21,5 @@
         "node-uuid"                 : "1.4.1"
     },
     "contributors": ["Simon Bond <simon.bond@gmail.com>"],
-    "keywords": ["Transaction", "MongoDB", "Commit", "Rollback", "Failure"]
+    "keywords": ["Transaction", "MongoDB", "Audit", "Commit", "Rollback", "Failure"]
 }

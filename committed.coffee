@@ -1,4 +1,5 @@
 async = require 'async'
+ObjectID = require('mongodb').ObjectID
 
 _state = 'stopped'
 _queues = null
@@ -8,12 +9,22 @@ _registry = {}
 _softwareVersion = null
 _queueCountersCollection = null
 _transactionsCollection = null
+_pkFactory = null
 
+class DefaultPkFactory
+    createPk: () ->
+        new ObjectID()
 
-exports.start = (db, softwareVersion, done) ->
+#optional params for start are [softwareVersion, pkFactory]
+#PkFactories work the same as those in node-mongodb-native, this is necessary
+#for the insert instruction, which assumes presence of _id before giving the
+#document over to the mongo driver
+
+exports.start = (db, optionals..., done) ->
     if _state isnt 'stopped'
         return done( new Error("committed has already been started") )
-    _softwareVersion = softwareVersion
+    _softwareVersion = optionals[0]
+    _pkFactory = if optionals[1]? then new optionals[1]() else new DefaultPkFactory()
     _db = db
 
     tasks = []
@@ -162,6 +173,8 @@ exports.sequentially = (transaction, done) ->
         return done( new Error("Can't queue a transaction for GlobalLock using the committed.sequentially function"), null)
     if not transaction.queue?.length
         return done( new Error("must have a transaction.queue parameter to use committed.sequentially"), null)
+    if transaction.status? and transaction.status isnt 'Queued'
+        return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
 
     #Yield to the event loop before performing state check. This ensures that
     #any drains are allowed time to run
@@ -194,6 +207,8 @@ exports.immediately = (transaction, done) ->
 
     if transaction.queue?
         return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it"))
+    if transaction.status? and transaction.status isnt 'Queued'
+        return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
 
     #Yield to the event loop before performing state check. This ensures that
     #any drains are allowed time to run
@@ -215,6 +230,9 @@ exports.withGlobalLock = (transaction, done) ->
     # magic "GlobalLock" queue, with special drain function, that's set up during start
     if transaction.queue isnt "GlobalLock"
         return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
+    if transaction.status? and transaction.status isnt 'Queued'
+        return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
+
     transaction.enqueuedAt = new Date()
     enqueue = () ->
         #drain all non-GlobalLock queues
@@ -285,13 +303,21 @@ _quietly = (fn) ->
         quietDone = (err, result) ->
             if err?
                 #this needs to go out to some kind of error notification...
-                console.log "error suppressed, probably during committed.start: #{JSON.stringify err}"
+                console.log "error suppressed, probably during committed.start: #{err}"
             done(null, result)
         return fn(args..., quietDone)
 
 _pushTransactionError = (transaction, error, done) ->
-    transaction.errors.push error
-    _transactionsCollection.update {_id: transaction._id}, {$push: {errors: error.toString()}}, {w:1, journal: true}, (err, updated) ->
+    # builtin errors don't serialise to json nicely
+    if error.name? and error.stack? and error.message?
+        serialisedError = 
+            name: error.name
+            message: error.message
+            stack: error.stack
+    else
+        serialisedError = error.toString()
+    transaction.errors.push serialisedError
+    _transactionsCollection.update {_id: transaction._id}, {$push: {errors: serialisedError}}, {w:1, journal: true}, (err, updated) ->
         #log these errors but don't pass them up
         if err? then console.log "error saving error to transaction: #{err}"
         done()
@@ -301,7 +327,6 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
         {$set: {
             status: toStatus
             softwareVersion: _softwareVersion
-            lastUpdate: new Date()
             enqueuedAt: transaction.enqueuedAt
             startedAt: transaction.startedAt
         }},
@@ -316,6 +341,8 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
                     _pushTransactionError transaction, updateError, () ->
                         return done(updateError)
                 else
+                    transaction.softwareVersion = _softwareVersion
+                    transaction.status = toStatus
                     return done(null)
 
 
@@ -381,21 +408,49 @@ commit = (transaction, done) ->
         return _updateTransactionStatus transaction, 'Queued', 'Processing', doCommit
 
 
+#takes an object (which can be serialised in mongo) and converts it to one
+#containing real mongo operations by putting '$' on the front of every key
+#that begins with the characters '__'
+_mongolize = (operations) ->
+    if Array.isArray operations
+        return operations
+    if typeof operations is 'object'
+        mongoOps = {}
+        for key, value of operations
+            if key.indexOf('__') is 0 #then the string starts with '__', so it's a mongo operator
+                mongoOps['$'+key.slice(2)] = _mongolize(value)
+            else
+                mongoOps[key] = _mongolize(value)
+        return mongoOps
+    else 
+        return operations 
 
-#THESE FUNCTION PROBABLY WANT TO BE REVISION "AWARE".
+_updateOneOptions =
+    w:1
+    journal: true
+    upsert:false
+    multi: false
+    serializeFunctions: false
+
+_revisionedUpdateChecks = (revisionName, newPartialDocument, oldPartialDocument) ->
+    if not (newPartialDocument.revision? and newPartialDocument.revision[revisionName]? and newPartialDocument._id?)
+        return new Error("unable to do a revisioned update with a newPartialDocument which does not contain the specified revision key (#{revisionName}), or is missing _id")
+    if not (oldPartialDocument.revision? and oldPartialDocument.revision[revisionName]? and oldPartialDocument._id?)
+        return new Error("unable to do a revisioned update with a oldPartialDocument which does not contain the specified revision key (#{revisionName}), or is missing _id")
+    if oldPartialDocument.revision[revisionName] isnt newPartialDocument.revision[revisionName]
+        return new Error("revision numbers between old and newPartialDocument must match (#{oldPartialDocument.revision[revisionName]} isnt #{newPartialDocument.revision[revisionName]}")
+    if typeof oldPartialDocument.revision[revisionName] isnt 'number'
+        return new Error("unable to do a revisioned update, revision.#{revisionName} isn't of type number")
+    return null
+
 
 # should be possible to do committed.register('db', committed.db) to use these fns
+# we will need to review the list the operations in due course, once they've matured a bit.
 exports.db =
     updateOne: (db, transactionData, collectionName, selector, values, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
-            options =
-                w:1
-                journal: true
-                upsert:false
-                multi: false
-                serializeFunctions: false
-            collection.update selector, values, options, (err, updated) ->
+            collection.update selector, values, _updateOneOptions, (err, updated) ->
                 if err? then return done(err, null)
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
@@ -405,13 +460,7 @@ exports.db =
             if err? then return done(err, false)
             setter = {}
             setter[field] = value
-            options =
-                w:1
-                journal: true
-                upsert:false
-                multi: false
-                serializeFunctions: false
-            collection.update selector, {$set: setter}, options, (err, updated) ->
+            collection.update selector, {$set: setter}, _updateOneOptions, (err, updated) ->
                 if err? then return done(err, null)
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
@@ -423,20 +472,19 @@ exports.db =
             setter = {}
             for fieldValue in fieldValues
                 setter[fieldValue.field] = fieldValue.value
-            options =
-                w:1
-                journal: true
-                upsert:false
-                multi: false
-                serializeFunctions: false
-            collection.update selector, {$set: setter}, options, (err, updated) ->
+            collection.update selector, {$set: setter}, _updateOneOptions, (err, updated) ->
                 if err? then return done(err, null)
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
 
+    #--- the following are all paired instructions ---
+
     insert: (db, transactionData, collectionName, documents, done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
+            if not documents.length? then documents = [documents]
+            for d in documents
+                if not d._id? then d._id = _pkFactory.createPk()
             options =
                 w:1
                 journal: true
@@ -445,16 +493,91 @@ exports.db =
                 if err? then return done(err, null)
                 return done(null, true)
 
+    insertRollback: (db, transactionData, collectionName, documents, done) ->
+        db.collection collectionName, {strict: true}, (err, collection) ->
+            if err? then return done(err, false)
+            options =
+                w:1
+                journal: true
+                serializeFunctions: false
+            if not documents.length? then documents = [documents]
+            iterator = (item, itemDone) ->
+                if not item._id? then return itemDone(new Error("unable to rollback an insert of document which doesn't have an _id field, this could be unsafe"))
+                #remove justOne item, but only if it's an exact match for the inserted document
+                collection.remove item, options, (err, result) ->
+                    itemDone(err)
+            async.each documents, iterator, (err) ->
+                done(err, true) #rollbacks only fail if there's an error
+
+    updateOneOp: (db, transactionData, collectionName, selector, updateOps, rollbackOps, done) ->
+        db.collection collectionName, {strict: true}, (err, collection) ->
+            if err? then return done(err, false)
+            collection.update _mongolize(selector), _mongolize(updateOps), _updateOneOptions, (err, updated) ->
+                if err? then return done(err, null)
+                if updated isnt 1 then return done(null, false) #the instruction has failed
+                return done(null, true)
+
+    updateOneOpRollback: (db, transactionData, collectionName, selector, updateOps, rollbackOps, done) ->
+        #Rollback for an updateOneOp is simply an update using the rollbackOps
+        return exports.db.updateOneOp(db, transactionData, collectionName, selector, rollbackOps, {}, done)
+
+    revisionedUpdate: (db, transactionData, collectionName, revisionName, newPartialDocument, oldPartialDocument, done) ->
+        db.collection collectionName, {strict: true}, (err, collection) ->
+            if err? then return done(err, false)
+            fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
+            if fail? then return done(fail)
+
+            revisionKey = "revision.#{revisionName}"
+            #create a mongo selector to find the exact revision given in newPartialDocument
+            mongoSelector = 
+                _id: newPartialDocument._id
+            mongoSelector[revisionKey]= oldPartialDocument.revision[revisionName]
+            #however, we don't want to actually $set ANY revision values, so create a fields object without the revision subdoc
+            fields = {}
+            fields[key] = value for key,value of newPartialDocument when key isnt 'revision' and key isnt '_id'
+            #now create mongo operations to $increment the revision and $set the given fields
+            mongoOps = 
+                $set: fields
+                $inc: {}
+            mongoOps.$inc[revisionKey] = 1
+            collection.update mongoSelector, mongoOps, _updateOneOptions, (err, updated) ->
+                if err? then return done(err, null)
+                if updated isnt 1 then return done(null, false) #the instruction has failed
+                return done(null, true)
+
+    revisionedUpdateRollback: (db, transactionData, collectionName, revisionName, newPartialDocument, oldPartialDocument, done) ->
+        db.collection collectionName, {strict: true}, (err, collection) ->
+            if err? then return done(err, false)
+            fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
+            if fail? then return done(fail)
+
+            revisionKey = "revision.#{revisionName}"
+            #create a document with only the revision for this partial document, we must rollback ONLY our revision number
+            oldFields = {}
+            oldFields[revisionKey] = oldPartialDocument.revision[revisionName]
+            oldFields[key] = value for key,value of oldPartialDocument when key isnt 'revision' and key isnt '_id'
+
+            #create a mongo selector which will match the document only if our original update operation was successful
+            newFields = {}
+            newFields[revisionKey] = newPartialDocument.revision[revisionName] + 1 #if we succeeded before then we'll have incremented this value
+            newFields[key] = value for key,value of newPartialDocument when key isnt 'revision'
+
+            #find the exact document we would have set if the update had been successful, and update fields to be exactly what we had before
+            collection.update newFields, { $set: oldFields }, _updateOneOptions, (err, updated) ->
+                if err? then return done(err, null)
+                # doesn't matter whether we updated anything, the original operation may have failed due to collision
+                return done(null, true)
 
 
-exports.transaction = (queueName) ->
+
+exports.transaction = (queueName, username) ->
     transaction =
         softwareVersion: _softwareVersion
         queue: queueName
         position: 1
         startedAt: null
         enqueuedAt: null
-        enqueuedBy: "username"
+        enqueuedBy: username
         status: "Queued"
         errors: []
         data: {}

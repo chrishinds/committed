@@ -14,6 +14,7 @@ dbconfig =
     database : "committedtest"
 
 before (done) ->
+    committed.register 'db', committed.db
     # Connect to the database
     dbaddress = 'mongodb://' + dbconfig.server + '/' + dbconfig.database
 
@@ -44,7 +45,6 @@ describe 'Committed', ->
                     done()
 
         it 'should accept the predefined named functions (once)', (done) ->
-            committed.register 'db', committed.db
             try
                 committed.register 'db', committed.db
             catch error
@@ -413,3 +413,268 @@ describe 'Committed', ->
                 async.parallel tests, (err) ->
                     if err? then return done(err)
                     committed.start _db, 'testSoftwareVersion', done
+
+
+    describe 'instructions', ->
+
+        beforeEach (done) ->
+            committed.start _db, 'testSoftwareVersion', (err) ->
+                should.not.exist err
+                _db.createCollection 'instructionsTest', (err, collection) -> 
+                    collection.remove {}, {w:1}, done
+
+        afterEach (done) ->
+            committed.stop done
+
+        it 'insert should reach mongo, and be issued with an _id', (done) ->
+            doc = {t:'t', q:'q'}
+            transaction = committed.transaction "test"
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', doc]
+            committed.sequentially transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                should.exist(doc._id)
+                _db.collection 'instructionsTest', (err, collection) ->
+                    collection.findOne {_id: doc._id}, (err, docInDB) ->
+                        doc.t.should.equal docInDB.t
+                        doc.q.should.equal docInDB.q
+                        done()
+
+        it 'insert should work with multiple documents', (done) ->
+            docs = ( {i: i} for i in [0..10] )
+            transaction = committed.transaction "test"
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', docs]
+            committed.sequentially transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'instructionsTest', (err, collection) ->
+                    ids = ( doc._id for doc in docs )
+                    collection.find( _id: $in: ids ).toArray (err, docsInDB) ->
+                        docsInDB.length.should.equal docs.length
+                        done()
+
+        it 'insertRollback should undo insert for multiple documents', (done) ->
+            docs = ( {i: i} for i in [0..10] )
+            transaction = committed.transaction "test"
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', docs]
+            transaction.instructions.push
+                name: 'db.insertRollback'
+                arguments: ['instructionsTest', docs]
+            committed.sequentially transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'instructionsTest', (err, collection) ->
+                    ids = ( doc._id for doc in docs )
+                    collection.find( _id: $in: ids ).toArray (err, docsInDB) ->
+                        docsInDB.length.should.equal 0
+                        done()
+
+        it 'updateOneOp should update only one document', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            transaction = committed.transaction "test"
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', docs]
+            committed.sequentially transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                update = committed.transaction "test"
+                ids = ( d._id for d in docs )
+                update.instructions.push
+                    name: 'db.updateOneOp'
+                    arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                committed.sequentially update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({j:true}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            done()
+
+        it 'updateOneOpRollback should undo an updateOneOp', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            transaction = committed.transaction "test"
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', docs]
+            committed.sequentially transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                update = committed.transaction "test"
+                ids = ( d._id for d in docs )
+                update.instructions.push
+                    name: 'db.updateOneOp'
+                    arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                committed.sequentially update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    rollback = committed.transaction "test"
+                    rollback.instructions.push
+                        name: 'db.updateOneOpRollback'
+                        arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                    committed.sequentially rollback, (err,status) ->
+                        should.not.exist err
+                        status.should.be.string 'Committed'
+                        _db.collection 'instructionsTest', (err, collection) ->
+                            collection.find({j:true}).toArray (err, docsInDB) ->
+                                docsInDB.length.should.equal 0
+                                done()
+
+        it 'revisionedUpdate should update a document with a correct revision', (done) ->
+            masterDoc =
+                revision: 
+                    contentRevision: 1
+                    otherRevision: 1
+                content: 'here'
+                otherContent: "other"
+            oldDoc =
+                revision: contentRevision: 1
+                content: 'here'
+            newDoc = 
+                revision: contentRevision: 1
+                content: 'here again'
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', masterDoc]
+            committed.sequentially insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = masterDoc._id
+                update = committed.transaction "test"
+                update.instructions.push
+                    name: 'db.revisionedUpdate'
+                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
+                committed.sequentially update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({content:"here again"}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            should.exist docsInDB[0]._id
+                            delete docsInDB[0]._id
+                            docsInDB[0].should.deep.equal 
+                                revision: 
+                                    contentRevision: 2
+                                    otherRevision: 1
+                                content: 'here again'
+                                otherContent: "other"
+                            done()
+
+        it 'revisionedUpdateRollback should undo a revisionedUpdate', (done) ->
+            masterDoc =
+                revision: 
+                    contentRevision: 1
+                    otherRevision: 1
+                content: 'here'
+                otherContent: "other"
+            oldDoc =
+                revision: contentRevision: 1
+                content: 'here'
+            newDoc = 
+                revision: contentRevision: 1
+                content: 'here again'
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', masterDoc]
+            committed.sequentially insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = masterDoc._id
+                update = committed.transaction "test"
+                update.instructions.push
+                    name: 'db.revisionedUpdate'
+                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
+                committed.sequentially update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    rollback = committed.transaction "test"
+                    rollback.instructions.push
+                        name: 'db.revisionedUpdateRollback'
+                        arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
+                    committed.sequentially rollback, (err, status) ->
+                        should.not.exist err
+                        status.should.be.string 'Committed'
+                        _db.collection 'instructionsTest', (err, collection) ->
+                            collection.find({content:"here"}).toArray (err, docsInDB) ->
+                                docsInDB.length.should.equal 1
+                                should.exist docsInDB[0]._id
+                                delete docsInDB[0]._id
+                                docsInDB[0].should.deep.equal 
+                                    revision: 
+                                        contentRevision: 1
+                                        otherRevision: 1
+                                    content: 'here'
+                                    otherContent: "other"
+                                done()            
+
+        it 'revisionedUpdate should not update a document whose revision has changed', (done) ->
+            masterDoc =
+                revision: 
+                    contentRevision: 2
+                    otherRevision: 1
+                content: 'here'
+                otherContent: "other"
+            oldDoc =
+                revision: contentRevision: 1
+                content: 'here'
+            newDoc = 
+                revision: contentRevision: 1
+                content: 'here'
+                newContent: "a key which wont reach the db"
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', masterDoc]
+            committed.sequentially insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = masterDoc._id
+                update = committed.transaction "test"
+                update.instructions.push
+                    name: 'db.revisionedUpdate'
+                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
+                committed.sequentially update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Failed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({content:"here"}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            should.exist docsInDB[0]._id
+                            delete docsInDB[0]._id
+                            docsInDB[0].should.deep.equal 
+                                revision: 
+                                    contentRevision: 2
+                                    otherRevision: 1
+                                content: 'here'
+                                otherContent: "other"
+                            done()
+
+
+
+
+#tomorrow:
+# auto rollback for paired instructions.
+# committed.enqueue transaction; change name!
+# remove pessimistic transactions, they don't serialize
+# transaction chains. 
+
+# no need for new api, simply enqueue the parent transaction committed.chain [transactions] startup is interesting. it then feeds other queues and takes the callback. 
+
+###
+
+transaction has transactionsBefore, transactionsAfter; when we're done, if we have transactions with a transactionAfter, after we've Committed, 
+we modify out structure  so that we become the transactionBefore for our child, we save and then push our transactionAfter child into the right queue.
+
+we make sure that the db transaction never reaches status 'Committed' until transactionAfter is empty.
+
+
+
+###

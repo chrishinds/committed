@@ -359,12 +359,42 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
                     transaction.status = toStatus
                     return done(null)
 
+_clone = (obj) ->
+    if not obj? or typeof obj isnt 'object'
+        return obj
+
+    if obj instanceof Array
+        return ( _clone(x) for x in obj )
+
+    if obj instanceof Date
+        return new Date(obj.getTime()) 
+
+    if obj instanceof RegExp
+        flags = ''
+        flags += 'g' if obj.global?
+        flags += 'i' if obj.ignoreCase?
+        flags += 'm' if obj.multiline?
+        flags += 'y' if obj.sticky?
+        return new RegExp(obj.source, flags) 
+
+    newInstance = new obj.constructor()
+
+    for key of obj
+        newInstance[key] = _clone obj[key]
+
+    return newInstance
+
 
 #if rollback succeeds then set transaction.status = Failed; if rollback fails set to failStatus
 rollback = (transaction, failStatus, done) ->
     if transaction.status isnt 'Processing'
         return done( new Error("can't rollback a transaction that isn't at 'Processing' status"), null)
-    execute transaction.rollback, transaction.data, (rollbackErr, result) ->
+    if transaction.rollback? #then we have a list of rollback instructions, so use them
+        rollbackInstructions = transaction.rollback
+    else #our rollback is implicit, so generate them from the main instructions
+        rollbackInstructions = _clone(transaction.instructions)
+        t.name = t.name+'Rollback' for t in rollbackInstructions
+    execute rollbackInstructions, transaction.data, (rollbackErr, result) ->
         failed = rollbackErr? or result is false
         switch
             when failed and transaction.errors.length > 0

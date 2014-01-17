@@ -199,11 +199,22 @@ describe 'Committed', ->
                 done 'Supposed to fail', false
             committed.register 'errorMethod', errorMethod
 
+            failSlowlyMethod = (db, transactionData, done) ->
+                setTimeout (() -> done(null, false)), 1000
+            committed.register 'failSlowlyMethod', failSlowlyMethod
+            
+            failSlowlyMethodRollback = (db, transactionData, done) ->
+                setTimeout (() -> done(null, true)), 1000
+            committed.register 'failSlowlyMethodRollback', failSlowlyMethodRollback
+            done()
+
+        beforeEach (done) ->
             committed.start _db, 'testSoftwareVersion', (err) ->
                 should.not.exist err
-                _db.createCollection 'rollbackTest', done
+                _db.createCollection 'rollbackTest', (err, collection) ->
+                    collection.remove {}, {w:1}, done
 
-        after (done) ->
+        afterEach (done) ->
             committed.stop done
 
         it 'should rollback an errored transaction and return status FailedCommitErrorRollbackOk', (done) ->
@@ -289,6 +300,25 @@ describe 'Committed', ->
                 _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
                     count.should.equal 1
                     done(err)
+
+        it 'should use implicit rollbacks when the transaction.rollback array is null', (done) ->
+            transaction = committed.transaction 'rollbackTest'
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['rollbackTest', {content: 'great content'}]
+            transaction.instructions.push
+                name: 'db.insert'
+                arguments: ['rollbackTest', {content: 'more great content'}]
+            transaction.instructions.push
+                name: 'failSlowlyMethod'
+                arguments: []
+            committed.enqueue transaction, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Failed'
+                _db.collection('rollbackTest').find().toArray (err, docs) ->
+                    docs.length.should.equal 0
+                    done() 
+
 
     describe 'error handling', ->
 

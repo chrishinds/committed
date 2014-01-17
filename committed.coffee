@@ -160,7 +160,7 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
     _queues[queueName].push transaction, done
 
 
-exports.sequentially = (transaction, done) ->
+exports.enqueue = (transaction, done) ->
     transaction.enqueuedAt = new Date()
     enqueue = () ->
         if _state is 'started'
@@ -170,9 +170,9 @@ exports.sequentially = (transaction, done) ->
                 return done(err, 'Failed')
     #check we've got a valid queuename in the transaction.
     if transaction.queue is "GlobalLock"
-        return done( new Error("Can't queue a transaction for GlobalLock using the committed.sequentially function"), null)
+        return done( new Error("Can't queue a transaction for GlobalLock using the committed.enqueue function"), null)
     if not transaction.queue?.length
-        return done( new Error("must have a transaction.queue parameter to use committed.sequentially"), null)
+        return done( new Error("must have a transaction.queue parameter to use committed.enqueue"), null)
     if transaction.status? and transaction.status isnt 'Queued'
         return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
 

@@ -83,7 +83,7 @@ describe 'Committed', ->
                 transaction.instructions.push
                     name: 'db.insert'
                     arguments: ['validOpsTest', {value: n + 10}]
-                committed.sequentially transaction, next
+                committed.enqueue transaction, next
 
             start = new Date().getTime()
 
@@ -115,7 +115,7 @@ describe 'Committed', ->
                                 transaction.instructions.push
                                     name: 'db.insert'
                                     arguments: ['validOpsTest', {t:t, q:q}]
-                                committed.sequentially transaction, (err, status) ->
+                                committed.enqueue transaction, (err, status) ->
                                     should.not.exist err
                                     status.should.be.string 'Committed'
                                     done()
@@ -135,7 +135,7 @@ describe 'Committed', ->
             transaction.data =
                 target: 'validOpsTest'
                 value: id
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 _db.collection('validOpsTest').count {value: id}, (err, count) ->
@@ -177,12 +177,12 @@ describe 'Committed', ->
                 # make sure the queues are open again
 
                 nonGlobalTransaction = committed.transaction 'nonGlobal'
-                committed.sequentially nonGlobalTransaction, (err, status) ->
+                committed.enqueue nonGlobalTransaction, (err, status) ->
                     status.should.equal 'Committed'
                     done(err)
 
             nonGlobalTransaction = committed.transaction 'nonGlobal'
-            committed.sequentially nonGlobalTransaction, (err, status) ->
+            committed.enqueue nonGlobalTransaction, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Failed'
                 finishObj.finished = true
@@ -240,7 +240,7 @@ describe 'Committed', ->
                 name: 'db.updateOneField'
                 arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
 
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 status.should.equal 'FailedCommitErrorRollbackOk'
                 # 'manually' check that we rolled back
                 _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
@@ -260,7 +260,7 @@ describe 'Committed', ->
                 name: 'db.updateOneField'
                 arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
 
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 status.should.equal 'Failed'
                 # 'manually' check that we rolled back
                 _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
@@ -282,7 +282,7 @@ describe 'Committed', ->
             transaction.rollback.push
                 name: 'errorMethod'
 
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitErrorRollbackError'
                 # 'manually' check that we rolled back
                 _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
@@ -304,7 +304,7 @@ describe 'Committed', ->
             transaction.rollback.push
                 name: 'failMethod'
 
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitFailedRollbackError'
                 # 'manually' check that we rolled back
                 _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
@@ -329,7 +329,7 @@ describe 'Committed', ->
             transaction.data =
                 target: 'rollbackTest'
                 value: id
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Failed'
                 _db.collection('rollbackTest').count {value: id, rolledback: true}, (err, count) ->
@@ -351,20 +351,20 @@ describe 'Committed', ->
 
             tests.push (done) ->
                 globalTransaction = committed.transaction 'GlobalLock'
-                committed.sequentially globalTransaction, (err) ->
-                    err.message.should.have.string "Can't queue a transaction for GlobalLock using the committed.sequentially function"
+                committed.enqueue globalTransaction, (err) ->
+                    err.message.should.have.string "Can't queue a transaction for GlobalLock using the committed.enqueue function"
                     done()
 
             tests.push (done) ->
                 nullQueueTransaction = committed.transaction null
-                committed.sequentially nullQueueTransaction, (err) ->
-                    err.message.should.have.string 'must have a transaction.queue parameter to use committed.sequentially'
+                committed.enqueue nullQueueTransaction, (err) ->
+                    err.message.should.have.string 'must have a transaction.queue parameter to use committed.enqueue'
                     done()
 
             tests.push (done) ->
                 emptyQueueTransaction = committed.transaction ''
-                committed.sequentially emptyQueueTransaction, (err) ->
-                    err.message.should.have.string 'must have a transaction.queue parameter to use committed.sequentially'
+                committed.enqueue emptyQueueTransaction, (err) ->
+                    err.message.should.have.string 'must have a transaction.queue parameter to use committed.enqueue'
                     done()
 
             tests.push (done) ->
@@ -391,7 +391,7 @@ describe 'Committed', ->
 
                 tests.push (done) ->
                     transaction = committed.transaction 'testQ'
-                    committed.sequentially transaction, (err, status) ->
+                    committed.enqueue transaction, (err, status) ->
                         should.not.exist err
                         status.should.have.string 'Failed'
                         done()
@@ -432,7 +432,7 @@ describe 'Committed', ->
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', doc]
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 should.exist(doc._id)
@@ -448,7 +448,7 @@ describe 'Committed', ->
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', docs]
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 _db.collection 'instructionsTest', (err, collection) ->
@@ -466,7 +466,7 @@ describe 'Committed', ->
             transaction.instructions.push
                 name: 'db.insertRollback'
                 arguments: ['instructionsTest', docs]
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 _db.collection 'instructionsTest', (err, collection) ->
@@ -481,7 +481,7 @@ describe 'Committed', ->
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', docs]
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 update = committed.transaction "test"
@@ -489,7 +489,7 @@ describe 'Committed', ->
                 update.instructions.push
                     name: 'db.updateOneOp'
                     arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
-                committed.sequentially update, (err,status) ->
+                committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
                     _db.collection 'instructionsTest', (err, collection) ->
@@ -503,7 +503,7 @@ describe 'Committed', ->
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', docs]
-            committed.sequentially transaction, (err, status) ->
+            committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 update = committed.transaction "test"
@@ -511,14 +511,14 @@ describe 'Committed', ->
                 update.instructions.push
                     name: 'db.updateOneOp'
                     arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
-                committed.sequentially update, (err,status) ->
+                committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
                     rollback = committed.transaction "test"
                     rollback.instructions.push
                         name: 'db.updateOneOpRollback'
                         arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
-                    committed.sequentially rollback, (err,status) ->
+                    committed.enqueue rollback, (err,status) ->
                         should.not.exist err
                         status.should.be.string 'Committed'
                         _db.collection 'instructionsTest', (err, collection) ->
@@ -543,7 +543,7 @@ describe 'Committed', ->
             insert.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', masterDoc]
-            committed.sequentially insert, (err, status) ->
+            committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = masterDoc._id
@@ -551,7 +551,7 @@ describe 'Committed', ->
                 update.instructions.push
                     name: 'db.revisionedUpdate'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
-                committed.sequentially update, (err,status) ->
+                committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
                     _db.collection 'instructionsTest', (err, collection) ->
@@ -584,7 +584,7 @@ describe 'Committed', ->
             insert.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', masterDoc]
-            committed.sequentially insert, (err, status) ->
+            committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = masterDoc._id
@@ -592,14 +592,14 @@ describe 'Committed', ->
                 update.instructions.push
                     name: 'db.revisionedUpdate'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
-                committed.sequentially update, (err,status) ->
+                committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
                     rollback = committed.transaction "test"
                     rollback.instructions.push
                         name: 'db.revisionedUpdateRollback'
                         arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
-                    committed.sequentially rollback, (err, status) ->
+                    committed.enqueue rollback, (err, status) ->
                         should.not.exist err
                         status.should.be.string 'Committed'
                         _db.collection 'instructionsTest', (err, collection) ->
@@ -633,7 +633,7 @@ describe 'Committed', ->
             insert.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', masterDoc]
-            committed.sequentially insert, (err, status) ->
+            committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = masterDoc._id
@@ -641,7 +641,7 @@ describe 'Committed', ->
                 update.instructions.push
                     name: 'db.revisionedUpdate'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
-                committed.sequentially update, (err,status) ->
+                committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Failed'
                     _db.collection 'instructionsTest', (err, collection) ->

@@ -203,7 +203,7 @@
     return _queues[queueName].push(transaction, done);
   };
 
-  exports.sequentially = function(transaction, done) {
+  exports.enqueue = function(transaction, done) {
     var enqueue, _ref;
     transaction.enqueuedAt = new Date();
     enqueue = function() {
@@ -216,10 +216,10 @@
       }
     };
     if (transaction.queue === "GlobalLock") {
-      return done(new Error("Can't queue a transaction for GlobalLock using the committed.sequentially function"), null);
+      return done(new Error("Can't queue a transaction for GlobalLock using the committed.enqueue function"), null);
     }
     if (!((_ref = transaction.queue) != null ? _ref.length : void 0)) {
-      return done(new Error("must have a transaction.queue parameter to use committed.sequentially"), null);
+      return done(new Error("must have a transaction.queue parameter to use committed.enqueue"), null);
     }
     if ((transaction.status != null) && transaction.status !== 'Queued') {
       return done(new Error("Can't queue a transaction which is at a status other than Queued (or null)"));

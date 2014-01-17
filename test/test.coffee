@@ -121,28 +121,7 @@ describe 'Committed', ->
                                     done()
 
             async.parallel tasks, done
-
-        it 'should unpack and execute a transaction with a constructor', (done) ->
-            constructor = (data, done) ->
-                [instructions, rollback] = [[],[]]
-                instructions.push
-                    name: 'db.insert'
-                    arguments: [data.target, {value: data.value}]
-                done null, instructions, rollback
-            transaction = committed.transaction 'testQ'
-            transaction.constructor = constructor
-            id = uuid.v4()
-            transaction.data =
-                target: 'validOpsTest'
-                value: id
-            committed.enqueue transaction, (err, status) ->
-                should.not.exist err
-                status.should.be.string 'Committed'
-                _db.collection('validOpsTest').count {value: id}, (err, count) ->
-                    should.not.exist err
-                    count.should.equal 1
-                    done()
-
+            
 
     describe 'global lock', ->
 
@@ -310,32 +289,6 @@ describe 'Committed', ->
                 _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
                     count.should.equal 1
                     done(err)
-
-        it 'should run a constructed rollback if there is a constructor', (done) ->
-            constructor = (data, done) ->
-                [instructions, rollback] = [[],[]]
-                instructions.push
-                    name: 'db.insert'
-                    arguments: [data.target, {value: data.value}]
-                instructions.push
-                    name: 'failMethod'
-                rollback.push
-                    name: 'db.updateOneField'
-                    arguments: [data.target, {value: data.value}, 'rolledback', true]
-                done null, instructions, rollback
-            transaction = committed.transaction 'testQ'
-            transaction.constructor = constructor
-            id = uuid.v4()
-            transaction.data =
-                target: 'rollbackTest'
-                value: id
-            committed.enqueue transaction, (err, status) ->
-                should.not.exist err
-                status.should.be.string 'Failed'
-                _db.collection('rollbackTest').count {value: id, rolledback: true}, (err, count) ->
-                    should.not.exist err
-                    count.should.equal 1
-                    done()
 
     describe 'error handling', ->
 
@@ -662,7 +615,6 @@ describe 'Committed', ->
 
 #tomorrow:
 # auto rollback for paired instructions.
-# committed.enqueue transaction; change name!
 # remove pessimistic transactions, they don't serialize
 # transaction chains. 
 

@@ -185,13 +185,10 @@ exports.enqueue = (transaction, done) ->
         #set some essential values. This includes setting the queue position
         _queuePosition transaction.queue, (err, position) ->
             transaction.position = position
-            if transaction.constructor?
+            return _transactionsCollection.insert transaction, (err, docs) ->
+                if err? then return done(err, null)
+                #transaction has been written to the db, we're ready to enqueue, or bail if we've failed
                 return enqueue()
-            else
-                return _transactionsCollection.insert transaction, (err, docs) ->
-                    if err? then return done(err, null)
-                    #transaction has been written to the db, we're ready to enqueue, or bail if we've failed
-                    return enqueue()
 
 
 exports.immediately = (transaction, done) ->
@@ -216,13 +213,10 @@ exports.immediately = (transaction, done) ->
         transaction.status = if _state is 'started' then "Queued" else "Failed"
         #if we set the position to -1 then during start up if we want to process an immediate task it will get done first.
         transaction.position = -1
-        if transaction.constructor?
+        _transactionsCollection.insert transaction, (err, docs) ->
+            if err? then return done(err, null)
+            #transaction has been written to the db, it can be executed, immediately
             return go()
-        else
-            _transactionsCollection.insert transaction, (err, docs) ->
-                if err? then return done(err, null)
-                #transaction has been written to the db, it can be executed, immediately
-                return go()
 
 
 exports.withGlobalLock = (transaction, done) ->
@@ -247,24 +241,21 @@ exports.withGlobalLock = (transaction, done) ->
     #this includes setting the queue position
     _queuePosition transaction.queue, (err, position) ->
         transaction.position = position
-        if transaction.constructor?
-            return enqueue()
-        else
-            # lock down the other queues before doing the DB operation as that
-            # will take some time
-            if _state isnt 'stopped'
-                oldState = _state
-                _state = 'locked'
+        # lock down the other queues before doing the DB operation as that
+        # will take some time
+        if _state isnt 'stopped'
+            oldState = _state
+            _state = 'locked'
 
-            return _transactionsCollection.insert transaction, (err, docs) ->
-                if err?
-                    # Put the state back the way we found it
-                    _state = oldState
-                    return done(err, null)
-                if _state is 'stopped'
-                    return done(null, 'Failed')
-                else
-                    return enqueue()
+        return _transactionsCollection.insert transaction, (err, docs) ->
+            if err?
+                # Put the state back the way we found it
+                _state = oldState
+                return done(err, null)
+            if _state is 'stopped'
+                return done(null, 'Failed')
+            else
+                return enqueue()
 
 
 
@@ -396,16 +387,7 @@ commit = (transaction, done) ->
         return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status})"), null )
     transaction.status = 'Processing'
     transaction.startedAt = new Date()
-    if transaction.constructor?
-        #then this is a pessimistic transaction with a transaction-producing function
-        transaction.constructor transaction.data, (err, instructions, rollback) ->
-            if err? then return done(err, null)
-            #push instructions and rollaback onto whatever's already on the transaction
-            transaction.instructions.push(instruction) for instruction in instructions
-            transaction.rollback.push(instruction) for instruction in rollback
-            return _transactionsCollection.insert transaction, doCommit
-    else
-        return _updateTransactionStatus transaction, 'Queued', 'Processing', doCommit
+    return _updateTransactionStatus transaction, 'Queued', 'Processing', doCommit
 
 
 #takes an object (which can be serialised in mongo) and converts it to one
@@ -583,4 +565,3 @@ exports.transaction = (queueName, username) ->
         data: {}
         instructions: []
         rollback: []
-        constructor: null

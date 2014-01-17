@@ -228,16 +228,12 @@
       transaction.status = _state === 'started' ? "Queued" : "Failed";
       return _queuePosition(transaction.queue, function(err, position) {
         transaction.position = position;
-        if (transaction.constructor != null) {
+        return _transactionsCollection.insert(transaction, function(err, docs) {
+          if (err != null) {
+            return done(err, null);
+          }
           return enqueue();
-        } else {
-          return _transactionsCollection.insert(transaction, function(err, docs) {
-            if (err != null) {
-              return done(err, null);
-            }
-            return enqueue();
-          });
-        }
+        });
       });
     });
   };
@@ -263,16 +259,12 @@
     return setImmediate(function() {
       transaction.status = _state === 'started' ? "Queued" : "Failed";
       transaction.position = -1;
-      if (transaction.constructor != null) {
+      return _transactionsCollection.insert(transaction, function(err, docs) {
+        if (err != null) {
+          return done(err, null);
+        }
         return go();
-      } else {
-        return _transactionsCollection.insert(transaction, function(err, docs) {
-          if (err != null) {
-            return done(err, null);
-          }
-          return go();
-        });
-      }
+      });
     });
   };
 
@@ -307,25 +299,21 @@
     return _queuePosition(transaction.queue, function(err, position) {
       var oldState;
       transaction.position = position;
-      if (transaction.constructor != null) {
-        return enqueue();
-      } else {
-        if (_state !== 'stopped') {
-          oldState = _state;
-          _state = 'locked';
-        }
-        return _transactionsCollection.insert(transaction, function(err, docs) {
-          if (err != null) {
-            _state = oldState;
-            return done(err, null);
-          }
-          if (_state === 'stopped') {
-            return done(null, 'Failed');
-          } else {
-            return enqueue();
-          }
-        });
+      if (_state !== 'stopped') {
+        oldState = _state;
+        _state = 'locked';
       }
+      return _transactionsCollection.insert(transaction, function(err, docs) {
+        if (err != null) {
+          _state = oldState;
+          return done(err, null);
+        }
+        if (_state === 'stopped') {
+          return done(null, 'Failed');
+        } else {
+          return enqueue();
+        }
+      });
     });
   };
 
@@ -502,25 +490,7 @@
     }
     transaction.status = 'Processing';
     transaction.startedAt = new Date();
-    if (transaction.constructor != null) {
-      return transaction.constructor(transaction.data, function(err, instructions, rollback) {
-        var instruction, _i, _j, _len, _len1;
-        if (err != null) {
-          return done(err, null);
-        }
-        for (_i = 0, _len = instructions.length; _i < _len; _i++) {
-          instruction = instructions[_i];
-          transaction.instructions.push(instruction);
-        }
-        for (_j = 0, _len1 = rollback.length; _j < _len1; _j++) {
-          instruction = rollback[_j];
-          transaction.rollback.push(instruction);
-        }
-        return _transactionsCollection.insert(transaction, doCommit);
-      });
-    } else {
-      return _updateTransactionStatus(transaction, 'Queued', 'Processing', doCommit);
-    }
+    return _updateTransactionStatus(transaction, 'Queued', 'Processing', doCommit);
   };
 
   _mongolize = function(operations) {
@@ -810,8 +780,7 @@
       errors: [],
       data: {},
       instructions: [],
-      rollback: [],
-      constructor: null
+      rollback: []
     };
   };
 

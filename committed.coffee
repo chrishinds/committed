@@ -159,6 +159,16 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
         #would minimise memory at the expense of speed.
     _queues[queueName].push transaction, done
 
+_instructionsExistFor = (transaction) ->
+    if transaction.rollback? #if there's an explicit rollback array then check that all its instructions are good
+        for i in transaction.instructions.concat(transaction.rollback)
+            if not _registryFind(i.name)? then return false
+    else #if there's no explicit rollback array then find implicit rollback instructions.
+        for i in transaction.instructions
+            if not _registryFind(i.name)? then return false
+            if not _registryFind(i.name+'Rollback')? then return false
+    return true
+    
 
 exports.enqueue = (transaction, done) ->
     transaction.enqueuedAt = new Date()
@@ -175,6 +185,8 @@ exports.enqueue = (transaction, done) ->
         return done( new Error("must have a transaction.queue parameter to use committed.enqueue"), null)
     if transaction.status? and transaction.status isnt 'Queued'
         return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
+    if not _instructionsExistFor(transaction)
+        return done( new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry"))
 
     #Yield to the event loop before performing state check. This ensures that
     #any drains are allowed time to run
@@ -206,6 +218,8 @@ exports.immediately = (transaction, done) ->
         return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it"))
     if transaction.status? and transaction.status isnt 'Queued'
         return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
+    if not _instructionsExistFor(transaction)
+        return done( new Error("Can't begin work on a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry"))
 
     #Yield to the event loop before performing state check. This ensures that
     #any drains are allowed time to run
@@ -226,6 +240,8 @@ exports.withGlobalLock = (transaction, done) ->
         return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
     if transaction.status? and transaction.status isnt 'Queued'
         return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
+    if not _instructionsExistFor(transaction)
+        return done( new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry"))
 
     transaction.enqueuedAt = new Date()
     enqueue = () ->
@@ -258,6 +274,13 @@ exports.withGlobalLock = (transaction, done) ->
                 return enqueue()
 
 
+_registryFind = (name) ->
+    found = _registry
+    for key in name.split('.')
+        found = found[key]
+        if not found?
+            return null
+    return found 
 
 applyToRegistered = (name, fnArgs) ->
     found = _registry
@@ -552,7 +575,7 @@ exports.db =
 
 
 
-exports.transaction = (queueName, username) ->
+exports.transaction = (queueName, username, implicitRollbackInstructions=true) ->
     transaction =
         softwareVersion: _softwareVersion
         queue: queueName
@@ -564,4 +587,4 @@ exports.transaction = (queueName, username) ->
         errors: []
         data: {}
         instructions: []
-        rollback: []
+        rollback: if implicitRollbackInstructions then null else []

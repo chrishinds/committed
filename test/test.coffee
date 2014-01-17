@@ -121,7 +121,7 @@ describe 'Committed', ->
                                     done()
 
             async.parallel tasks, done
-            
+
 
     describe 'global lock', ->
 
@@ -145,7 +145,7 @@ describe 'Committed', ->
         it 'should close and reopen normal queues when processing a GlobalLock transaction', (done) ->
             finishObj = { finished: false }
 
-            globalTransaction = committed.transaction 'GlobalLock'
+            globalTransaction = committed.transaction 'GlobalLock', 'user', false
             globalTransaction.instructions.push
                 name: 'blockingMethod'
                 arguments: [finishObj]
@@ -155,7 +155,7 @@ describe 'Committed', ->
 
                 # make sure the queues are open again
 
-                nonGlobalTransaction = committed.transaction 'nonGlobal'
+                nonGlobalTransaction = committed.transaction 'nonGlobal', 'user', false
                 committed.enqueue nonGlobalTransaction, (err, status) ->
                     status.should.equal 'Committed'
                     done(err)
@@ -169,7 +169,7 @@ describe 'Committed', ->
         it 'should suspend and resume immediate processing when processing a GlobalLock transaction', (done) ->
             finishObj = { finished: false }
 
-            globalTransaction = committed.transaction 'GlobalLock'
+            globalTransaction = committed.transaction 'GlobalLock', 'user', false
             globalTransaction.instructions.push
                 name: 'blockingMethod'
                 arguments: [finishObj]
@@ -209,7 +209,7 @@ describe 'Committed', ->
         it 'should rollback an errored transaction and return status FailedCommitErrorRollbackOk', (done) ->
             insertId = uuid.v4()
 
-            transaction = committed.transaction 'rollbackTest'
+            transaction = committed.transaction 'rollbackTest', 'user', false
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['rollbackTest', {id: insertId, rolledback: false}]
@@ -229,7 +229,7 @@ describe 'Committed', ->
         it 'should rollback a failed transaction and return status Failed', (done) ->
             insertId = uuid.v4()
 
-            transaction = committed.transaction 'rollbackTest'
+            transaction = committed.transaction 'rollbackTest', 'user', false
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['rollbackTest', {id: insertId, rolledback: false}]
@@ -249,7 +249,7 @@ describe 'Committed', ->
         it 'should report a catastrophe if a rollback fails after an error', (done) ->
             insertId = uuid.v4()
 
-            transaction = committed.transaction 'rollbackTest'
+            transaction = committed.transaction 'rollbackTest', 'user', false
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['rollbackTest', {id: insertId, rolledback: false}]
@@ -271,7 +271,7 @@ describe 'Committed', ->
         it 'should report a catastrophe if a rollback fails after a failure', (done) ->
             insertId = uuid.v4()
 
-            transaction = committed.transaction 'rollbackTest'
+            transaction = committed.transaction 'rollbackTest', 'user', false
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['rollbackTest', {id: insertId, rolledback: false}]
@@ -412,7 +412,7 @@ describe 'Committed', ->
 
         it 'insertRollback should undo insert for multiple documents', (done) ->
             docs = ( {i: i} for i in [0..10] )
-            transaction = committed.transaction "test"
+            transaction = committed.transaction "test", 'user', false
             transaction.instructions.push
                 name: 'db.insert'
                 arguments: ['instructionsTest', docs]
@@ -467,7 +467,7 @@ describe 'Committed', ->
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
-                    rollback = committed.transaction "test"
+                    rollback = committed.transaction "test", 'user', false
                     rollback.instructions.push
                         name: 'db.updateOneOpRollback'
                         arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
@@ -500,7 +500,7 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = masterDoc._id
-                update = committed.transaction "test"
+                update = committed.transaction "test", 'user', false
                 update.instructions.push
                     name: 'db.revisionedUpdate'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
@@ -548,7 +548,7 @@ describe 'Committed', ->
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
-                    rollback = committed.transaction "test"
+                    rollback = committed.transaction "test", 'user', false
                     rollback.instructions.push
                         name: 'db.revisionedUpdateRollback'
                         arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
@@ -590,9 +590,12 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = masterDoc._id
-                update = committed.transaction "test"
+                update = committed.transaction "test", 'user', false
                 update.instructions.push
                     name: 'db.revisionedUpdate'
+                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
+                update.rollback.push
+                    name: 'db.revisionedUpdateRollback'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
@@ -615,7 +618,6 @@ describe 'Committed', ->
 
 #tomorrow:
 # auto rollback for paired instructions.
-# remove pessimistic transactions, they don't serialize
 # transaction chains. 
 
 # no need for new api, simply enqueue the parent transaction committed.chain [transactions] startup is interesting. it then feeds other queues and takes the callback. 

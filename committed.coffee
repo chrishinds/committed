@@ -159,6 +159,15 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
         #would minimise memory at the expense of speed.
     _queues[queueName].push transaction, done
 
+_checkTransaction = (transaction) ->
+    if transaction.status? and transaction.status isnt 'Queued'
+        return new Error("Can't queue a transaction which is at a status other than Queued (or null)")
+    if not _instructionsExistFor(transaction)
+        return new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry")
+    if transaction.rollback? and transaction.rollback.length isnt transaction.instructions.length
+        return new Error("Can't queue a transaction with an explicit rollback instructions whose length is not the same as its instructions array")
+
+
 _instructionsExistFor = (transaction) ->
     if transaction.rollback? #if there's an explicit rollback array then check that all its instructions are good
         for i in transaction.instructions.concat(transaction.rollback)
@@ -168,7 +177,22 @@ _instructionsExistFor = (transaction) ->
             if not _registryFind(i.name)? then return false
             if not _registryFind(i.name+'Rollback')? then return false
     return true
-    
+
+
+_setUpTransaction = (transaction) ->
+    #clone the instructions for any implicit rollback before the transaction hits
+    #the db to ensure that inadvertant changes to the instructions params during
+    #instruction execution dont prejudice the params rollbacks
+    if not transaction.rollback?
+        transaction.rollback = []
+        for i in transaction.instructions
+            iRoll = _clone i
+            iRoll.name = iRoll.name+'Rollback'
+            transaction.rollback.push iRoll
+    #every instruction gets its own object in which to hold state, eg _ids for insert
+    transaction.execution.state = []
+    transaction.execution.state.push {} for i in transaction.instructions
+
 
 exports.enqueue = (transaction, done) ->
     transaction.enqueuedAt = new Date()
@@ -183,10 +207,8 @@ exports.enqueue = (transaction, done) ->
         return done( new Error("Can't queue a transaction for GlobalLock using the committed.enqueue function"), null)
     if not transaction.queue?.length
         return done( new Error("must have a transaction.queue parameter to use committed.enqueue"), null)
-    if transaction.status? and transaction.status isnt 'Queued'
-        return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
-    if not _instructionsExistFor(transaction)
-        return done( new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry"))
+    error = _checkTransaction(transaction)
+    if error? then return done( error, null ) 
 
     #Yield to the event loop before performing state check. This ensures that
     #any drains are allowed time to run
@@ -197,6 +219,7 @@ exports.enqueue = (transaction, done) ->
         #set some essential values. This includes setting the queue position
         _queuePosition transaction.queue, (err, position) ->
             transaction.position = position
+            _setUpTransaction(transaction)
             return _transactionsCollection.insert transaction, (err, docs) ->
                 if err? then return done(err, null)
                 #transaction has been written to the db, we're ready to enqueue, or bail if we've failed
@@ -216,10 +239,8 @@ exports.immediately = (transaction, done) ->
 
     if transaction.queue?
         return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it"))
-    if transaction.status? and transaction.status isnt 'Queued'
-        return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
-    if not _instructionsExistFor(transaction)
-        return done( new Error("Can't begin work on a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry"))
+    error = _checkTransaction(transaction)
+    if error? then return done( error, null ) 
 
     #Yield to the event loop before performing state check. This ensures that
     #any drains are allowed time to run
@@ -227,6 +248,7 @@ exports.immediately = (transaction, done) ->
         transaction.status = if _state is 'started' then "Queued" else "Failed"
         #if we set the position to -1 then during start up if we want to process an immediate task it will get done first.
         transaction.position = -1
+        _setUpTransaction(transaction)
         _transactionsCollection.insert transaction, (err, docs) ->
             if err? then return done(err, null)
             #transaction has been written to the db, it can be executed, immediately
@@ -238,10 +260,8 @@ exports.withGlobalLock = (transaction, done) ->
     # magic "GlobalLock" queue, with special drain function, that's set up during start
     if transaction.queue isnt "GlobalLock"
         return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
-    if transaction.status? and transaction.status isnt 'Queued'
-        return done( new Error("Can't queue a transaction which is at a status other than Queued (or null)"))
-    if not _instructionsExistFor(transaction)
-        return done( new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry"))
+    error = _checkTransaction(transaction)
+    if error? then return done( error, null ) 
 
     transaction.enqueuedAt = new Date()
     enqueue = () ->
@@ -257,6 +277,7 @@ exports.withGlobalLock = (transaction, done) ->
     #this includes setting the queue position
     _queuePosition transaction.queue, (err, position) ->
         transaction.position = position
+        _setUpTransaction(transaction)
         # lock down the other queues before doing the DB operation as that
         # will take some time
         if _state isnt 'stopped'
@@ -294,22 +315,28 @@ applyToRegistered = (name, fnArgs) ->
 
 
 #done(err, result)
-execute = (instructions, data, done) ->
-    result = true
-    iterator = (instruction, iteratorDone) ->
+execute = (instructions, state, transaction, done) ->
+    results = []
+    iterator = ([instruction, state], iteratorDone) ->
         #assemble the arguments for the call of one of our registered functions
-        fnArgs = [_db, data]
-        if instruction.arguments?
-            fnArgs = fnArgs.concat(instruction.arguments)
+        args = if instruction.arguments? then instruction.arguments else []
+        if not Array.isArray(args) then args = [args]
+        fnArgs = [_db, transaction, state, args]
         #add the callback
         fnArgs.push (err, iteratorResult) ->
-            if iteratorResult is false then result = false
-            iteratorDone(err)
-        #call the function itself
+            #if an instruction has 'failed' by returning false, interrupt the series execution by returning an error
+            if not err? and iteratorResult is false
+                err = 'instructionFailed'
+            results.push iteratorResult
+            return iteratorDone(err)
+        #call the instruction's function
         applyToRegistered instruction.name, fnArgs
-    #run instructions in parallel
-    async.each instructions, iterator, (err) ->
-        done(err, result)
+    #execute all the instructions in series
+    instructionsWithState = ([instruction, state[i]] for instruction, i in instructions )
+    async.eachSeries instructionsWithState, iterator, (err) ->
+        #we may have terminated series by returning 'instructionFailed', however, it's necesary to separate failure from error
+        if err is 'instructionFailed' then err = null
+        return done(err, results)
 
 
 _quietly = (fn) ->
@@ -330,8 +357,8 @@ _pushTransactionError = (transaction, error, done) ->
             stack: error.stack
     else
         serialisedError = error.toString()
-    transaction.errors.push serialisedError
-    _transactionsCollection.update {_id: transaction._id}, {$push: {errors: serialisedError}}, {w:1, journal: true}, (err, updated) ->
+    transaction.execution.errors.push serialisedError
+    _transactionsCollection.update {_id: transaction._id}, {$push: {'execution.errors': serialisedError}}, {w:1, journal: true}, (err, updated) ->
         #log these errors but don't pass them up
         if err? then console.log "error saving error to transaction: #{err}"
         done()
@@ -343,6 +370,7 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
             softwareVersion: _softwareVersion
             enqueuedAt: transaction.enqueuedAt
             startedAt: transaction.startedAt
+            lastUpdatedAt: new Date()
         }},
         {w:1, journal: true}, (err, updated) ->
             switch
@@ -359,12 +387,19 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
                     transaction.status = toStatus
                     return done(null)
 
-_clone = (obj) ->
+_updateTransactionState = (transaction, done) ->
+    _transactionsCollection.update { _id: transaction._id }, {$set: 'executions.state': transaction.execution.state}, _updateOneOptions, (err,updated) ->
+        if not err? and updated isnt 1 then err = new Error("transaction not correctly updated with instruction state before insert")
+        done(err)
+
+_clone = (obj, mongolize=false) ->
+
+
     if not obj? or typeof obj isnt 'object'
         return obj
 
     if obj instanceof Array
-        return ( _clone(x) for x in obj )
+        return ( _clone(x, mongolize) for x in obj )
 
     if obj instanceof Date
         return new Date(obj.getTime()) 
@@ -378,32 +413,42 @@ _clone = (obj) ->
         return new RegExp(obj.source, flags) 
 
     newInstance = new obj.constructor()
-
-    for key of obj
-        newInstance[key] = _clone obj[key]
+    for key,value of obj
+        if mongolize and key.indexOf('__') is 0 #then the string starts with '__', so it's a mongo operator
+            newInstance['$'+key.slice(2)] = _clone(value, mongolize)
+        else
+            newInstance[key] = _clone(value, mongolize)
 
     return newInstance
 
 
-#if rollback succeeds then set transaction.status = Failed; if rollback fails set to failStatus
-rollback = (transaction, failStatus, done) ->
+#takes an object (which can be serialised in mongo) and converts it to one
+#containing real mongo operations by putting '$' on the front of every key
+#that begins with the characters '__'
+_mongolize = (obj) ->
+    _clone(obj, true)
+
+
+#if rollback succeeds then set transaction.status = Failed
+rollback = (transaction, results, done) ->
     if transaction.status isnt 'Processing'
         return done( new Error("can't rollback a transaction that isn't at 'Processing' status"), null)
-    if transaction.rollback? #then we have a list of rollback instructions, so use them
-        rollbackInstructions = transaction.rollback
-    else #our rollback is implicit, so generate them from the main instructions
-        rollbackInstructions = _clone(transaction.instructions)
-        t.name = t.name+'Rollback' for t in rollbackInstructions
-    execute rollbackInstructions, transaction.data, (rollbackErr, result) ->
-        failed = rollbackErr? or result is false
+    #we may not have executed everything in the original list of instructions
+    rollbackInstructions = transaction.rollback.slice(0, results.length)
+    rollbackState = transaction.execution.state.slice(0, results.length)
+    #and we need to rollback in reverse order
+    rollbackInstructions.reverse()
+    rollbackState.reverse()
+    execute rollbackInstructions, rollbackState, transaction, (rollbackErr, results) ->
+        failed = rollbackErr? or not results.every( (x) -> x )
         switch
-            when failed and transaction.errors.length > 0
+            when failed and transaction.execution.errors.length > 0
                 newStatus = 'CatastropheCommitErrorRollbackError'
-            when failed and transaction.errors.length is 0
+            when failed and transaction.execution.errors.length is 0
                 newStatus = 'CatastropheCommitFailedRollbackError'
-            when not failed and transaction.errors.length > 0
+            when not failed and transaction.execution.errors.length > 0
                 newStatus = 'FailedCommitErrorRollbackOk'
-            when not failed and transaction.errors.length is 0
+            when not failed and transaction.execution.errors.length is 0
                 newStatus = 'Failed'
 
         #we used the length of transaction.errors above to tell whether
@@ -423,18 +468,24 @@ commit = (transaction, done) ->
     doCommit = (err) ->
         if err? then return done(err, null)
         #transaction is now at 'Processing' status, we can now execute its instructions.
-        execute transaction.instructions, transaction.data, (err, result) ->
+        execute transaction.instructions, transaction.execution.state, transaction, (err, results) ->
             if err?
-                _pushTransactionError transaction, err, () ->
+                return _pushTransactionError transaction, err, () ->
                     #if there's been an error in execution then we need to rollback everything
-                    rollback transaction, err, done
-            else if result
+                    return rollback transaction, results, done
+            else if results.length is transaction.instructions.length and results.every( (x) -> x )
                 #then the transaction has succeeded.
-                _updateTransactionStatus transaction, 'Processing', 'Committed', (err) ->
+                return _updateTransactionStatus transaction, 'Processing', 'Committed', (err) ->
                     return done(err, 'Committed')
             else
                 #the transaction has (legitimately) failed
-                rollback transaction, err, done
+                failureInfo = "legitimate transaction failure, instruction results: #{JSON.stringify results}"
+                transaction.execution.info.push failureInfo
+                return _transactionsCollection.update {_id: transaction._id}, {$push: {'execution.info': failureInfo}}, {w:1, journal: true}, (err, updated) ->
+                    #log these errors but don't pass them up
+                    if err? then console.log "error saving error to transaction: #{err}"
+                    return rollback transaction, results, done
+
     #is this transaction at queued status?
     if transaction.status isnt 'Queued'
         return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status})"), null )
@@ -443,22 +494,7 @@ commit = (transaction, done) ->
     return _updateTransactionStatus transaction, 'Queued', 'Processing', doCommit
 
 
-#takes an object (which can be serialised in mongo) and converts it to one
-#containing real mongo operations by putting '$' on the front of every key
-#that begins with the characters '__'
-_mongolize = (operations) ->
-    if Array.isArray operations
-        return operations
-    if typeof operations is 'object'
-        mongoOps = {}
-        for key, value of operations
-            if key.indexOf('__') is 0 #then the string starts with '__', so it's a mongo operator
-                mongoOps['$'+key.slice(2)] = _mongolize(value)
-            else
-                mongoOps[key] = _mongolize(value)
-        return mongoOps
-    else 
-        return operations 
+
 
 _updateOneOptions =
     w:1
@@ -481,8 +517,14 @@ _revisionedUpdateChecks = (revisionName, newPartialDocument, oldPartialDocument)
 
 # should be possible to do committed.register('db', committed.db) to use these fns
 # we will need to review the list the operations in due course, once they've matured a bit.
+#note: values passed to instructions should generally be considered immutable,
+#as they'll be cloned after commit in the event of implicit rollback
+#instructions must return done(err, result) where result is true for success and false for failure
 exports.db =
-    updateOne: (db, transactionData, collectionName, selector, values, done) ->
+    pass: (db, transaction, state, args, done) ->
+        done(null, true)
+
+    updateOne: (db, transaction, state, [collectionName, selector, values, etc...], done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             collection.update selector, values, _updateOneOptions, (err, updated) ->
@@ -490,7 +532,7 @@ exports.db =
                 if updated isnt 1 then return done( null, false) #the instruction has failed
                 return done(null, true)
 
-    updateOneField: (db, transactionData, collectionName, selector, field, value, done) ->
+    updateOneField: (db, transaction, state, [collectionName, selector, field, value, etc...], done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             setter = {}
@@ -501,7 +543,7 @@ exports.db =
                 return done(null, true)
 
     # like updateOneField, but takes an array of key-value pairs to update
-    updateOneFields: (db, transactionData, collectionName, selector, fieldValues, done) ->
+    updateOneFields: (db, transaction, state, [collectionName, selector, fieldValues, etc...], done) ->
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             setter = {}
@@ -514,37 +556,62 @@ exports.db =
 
     #--- the following are all paired instructions ---
 
-    insert: (db, transactionData, collectionName, documents, done) ->
+    insert: (db, transaction, state, [collectionName, documents, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to insert"))
+        if not (collectionName? and documents?) then return done(new Error("null or missing argument to insert command"))
+
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
-            if not documents.length? then documents = [documents]
+            if not Array.isArray(documents) then documents = [documents]
+            #inserts should _id every document, otherwise accurate rollback won't be possible, moreover these ids need to be saved somewhere
+            state.ids = []
             for d in documents
-                if not d._id? then d._id = _pkFactory.createPk()
+                if d._id? 
+                    state.ids.push d._id
+                else
+                    d._id = _pkFactory.createPk()
+                    state.ids.push d._id
             options =
                 w:1
                 journal: true
                 serializeFunctions: false
-            collection.insert documents, options, (err, objects) ->
+            _updateTransactionState transaction, (err) ->
                 if err? then return done(err, null)
-                return done(null, true)
+                collection.insert documents, options, (err, objects) ->
+                    if err? then return done(err, null)
+                    return done(null, true)
 
-    insertRollback: (db, transactionData, collectionName, documents, done) ->
+    insertRollback: (db, transaction, state, [collectionName, documents, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to insertRollback"))
+        if not (collectionName? and documents?) then return done(new Error("null or missing argument to insertRollback command"))
+
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             options =
                 w:1
                 journal: true
                 serializeFunctions: false
-            if not documents.length? then documents = [documents]
-            iterator = (item, itemDone) ->
-                if not item._id? then return itemDone(new Error("unable to rollback an insert of document which doesn't have an _id field, this could be unsafe"))
-                #remove justOne item, but only if it's an exact match for the inserted document
-                collection.remove item, options, (err, result) ->
-                    itemDone(err)
-            async.each documents, iterator, (err) ->
-                done(err, true) #rollbacks only fail if there's an error
+            if not state.ids?
+                #then we never got to the insert, so there's nothing for the rollback to do
+                return done(null, true)
+            else
+                #where documents lack an _id, we have to fill this in from what was generated during the insert instruction. 
+                if not Array.isArray(documents) then documents = [documents]
+                if documents.length isnt state.ids.length
+                    return done(new Error("during rollback, number of documents to insert doesnt match the number of ids generated during insert"), false)
+                for d,i in documents
+                    if not d._id? then d._id = state.ids[i]
+                iterator = (item, itemDone) ->
+                    #remove justOne item, but only if it's an exact match for the inserted document
+                    collection.remove item, options, (err, result) ->
+                        itemDone(err)
+                return async.each documents, iterator, (err) ->
+                    return done(err, true) #rollbacks only fail if there's an error
 
-    updateOneOp: (db, transactionData, collectionName, selector, updateOps, rollbackOps, done) ->
+    updateOneOp: (db, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
+        if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
+
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             collection.update _mongolize(selector), _mongolize(updateOps), _updateOneOptions, (err, updated) ->
@@ -552,11 +619,17 @@ exports.db =
                 if updated isnt 1 then return done(null, false) #the instruction has failed
                 return done(null, true)
 
-    updateOneOpRollback: (db, transactionData, collectionName, selector, updateOps, rollbackOps, done) ->
-        #Rollback for an updateOneOp is simply an update using the rollbackOps
-        return exports.db.updateOneOp(db, transactionData, collectionName, selector, rollbackOps, {}, done)
+    updateOneOpRollback: (db, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
+        if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
+        #Rollback for an updateOneOp is almost an update using the rollbackOps, except that it always results in true
+        return exports.db.updateOneOp db, transaction, state, [collectionName, selector, rollbackOps, {}], (err, result) ->
+            done(err, true)
 
-    revisionedUpdate: (db, transactionData, collectionName, revisionName, newPartialDocument, oldPartialDocument, done) ->
+    revisionedUpdate: (db, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdate"))
+        if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdate command"))
+
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
@@ -580,7 +653,10 @@ exports.db =
                 if updated isnt 1 then return done(null, false) #the instruction has failed
                 return done(null, true)
 
-    revisionedUpdateRollback: (db, transactionData, collectionName, revisionName, newPartialDocument, oldPartialDocument, done) ->
+    revisionedUpdateRollback: (db, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdateRollback"))
+        if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdateRollback command"))
+
         db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
@@ -604,7 +680,6 @@ exports.db =
                 return done(null, true)
 
 
-
 exports.transaction = (queueName, username, implicitRollbackInstructions=true) ->
     transaction =
         softwareVersion: _softwareVersion
@@ -612,9 +687,13 @@ exports.transaction = (queueName, username, implicitRollbackInstructions=true) -
         position: 1
         startedAt: null
         enqueuedAt: null
+        lastUpdatedAt: null
         enqueuedBy: username
         status: "Queued"
-        errors: []
         data: {}
         instructions: []
         rollback: if implicitRollbackInstructions then null else []
+        execution:
+            state: []
+            errors: []
+            info: []

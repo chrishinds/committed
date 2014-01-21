@@ -524,38 +524,6 @@ exports.db =
     pass: (db, transaction, state, args, done) ->
         done(null, true)
 
-    updateOne: (db, transaction, state, [collectionName, selector, values, etc...], done) ->
-        db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err, false)
-            collection.update selector, values, _updateOneOptions, (err, updated) ->
-                if err? then return done(err, null)
-                if updated isnt 1 then return done( null, false) #the instruction has failed
-                return done(null, true)
-
-    updateOneField: (db, transaction, state, [collectionName, selector, field, value, etc...], done) ->
-        db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err, false)
-            setter = {}
-            setter[field] = value
-            collection.update selector, {$set: setter}, _updateOneOptions, (err, updated) ->
-                if err? then return done(err, null)
-                if updated isnt 1 then return done( null, false) #the instruction has failed
-                return done(null, true)
-
-    # like updateOneField, but takes an array of key-value pairs to update
-    updateOneFields: (db, transaction, state, [collectionName, selector, fieldValues, etc...], done) ->
-        db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err, false)
-            setter = {}
-            for fieldValue in fieldValues
-                setter[fieldValue.field] = fieldValue.value
-            collection.update selector, {$set: setter}, _updateOneOptions, (err, updated) ->
-                if err? then return done(err, null)
-                if updated isnt 1 then return done( null, false) #the instruction has failed
-                return done(null, true)
-
-    #--- the following are all paired instructions ---
-
     insert: (db, transaction, state, [collectionName, documents, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to insert"))
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insert command"))

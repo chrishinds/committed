@@ -269,50 +269,35 @@ describe 'Committed', ->
                     done(err)
 
         it 'should report a catastrophe if a rollback fails after an error', (done) ->
-            insertId = uuid.v4()
-
+            doc = content: 'agogo'
             transaction = committed.transaction 'rollbackTest', 'user', false
             transaction.instructions.push
                 name: 'db.insert'
-                arguments: ['rollbackTest', {id: insertId, rolledback: false}]
+                arguments: ['rollbackTest', doc]
             transaction.instructions.push
-                name: 'errorMethod'
-            #contrived nature of test makes this counter intuitive to me, but
-            #rollbacks are reversed by committed during execution, so:
-            transaction.rollback.push
-                name: 'errorMethod'
-            transaction.rollback.push
-                name: 'db.updateOneField'
-                arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
-
+                name: 'errorMethod' #this will error the transaction
+            #now error the rollback
+            transaction.rollback= [ {name: 'errorMethod'}, {name: 'errorMethod'} ]
             committed.enqueue transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitErrorRollbackError'
-                # 'manually' check that we rolled back
-                _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
-                    count.should.equal 1
-                    done(err)
+                err.should.equal 'Supposed to fail'
+                done()
 
         it 'should report a catastrophe if a rollback fails after a failure', (done) ->
-            insertId = uuid.v4()
-
+            doc = content: 'agogo'
             transaction = committed.transaction 'rollbackTest', 'user', false
             transaction.instructions.push
                 name: 'db.insert'
-                arguments: ['rollbackTest', {id: insertId, rolledback: false}]
+                arguments: ['rollbackTest', doc]
             transaction.instructions.push
                 name: 'failMethod'
             transaction.rollback.push
                 name: 'failMethod'
             transaction.rollback.push
-                name: 'db.updateOneField'
-                arguments: ['rollbackTest', {id: insertId}, 'rolledback', true]
-
+                name: 'failMethod'
             committed.enqueue transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitFailedRollbackError'
-                # 'manually' check that we rolled back
-                _db.collection('rollbackTest').count {id: insertId, rolledback: true}, (err, count) ->
-                    count.should.equal 1
-                    done(err)
+                done(err)
 
         it 'should use implicit rollbacks when the transaction.rollback array is null', (done) ->
             transaction = committed.transaction 'rollbackTest'
@@ -677,7 +662,9 @@ test rollback ordering
 
 test for restartability of instructions, esp for rollback.
 
+stopping finishes all tasks.
 
+global lock treats existing tasks nicely
 
 
 ---

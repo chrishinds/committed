@@ -122,19 +122,21 @@
   };
 
   exports.stop = function(done) {
-    var name;
     if (_state === 'stopped') {
       return done(new Error("committed is not currently started"));
     }
-    _state = 'stopped';
-    return _drainQueues((function() {
-      var _results;
-      _results = [];
-      for (name in _queues) {
-        _results.push(name);
-      }
-      return _results;
-    })(), done);
+    return setImmediate(function() {
+      var name;
+      _state = 'stopped';
+      return _drainQueues((function() {
+        var _results;
+        _results = [];
+        for (name in _queues) {
+          _results.push(name);
+        }
+        return _results;
+      })(), done);
+    });
   };
 
   _drainQueues = function(queues, done) {
@@ -150,7 +152,7 @@
         return _results;
       })()).every(function(x) {
         return x;
-      });
+      }) && _immediateCounter === 0;
     }, function(untilBodyDone) {
       return setTimeout(untilBodyDone, 10);
     }, function(err) {
@@ -928,11 +930,8 @@
     }
   };
 
-  exports.transaction = function(queueName, username, implicitRollbackInstructions) {
+  exports.transaction = function(queueName, username, instructions, rollback) {
     var transaction;
-    if (implicitRollbackInstructions == null) {
-      implicitRollbackInstructions = true;
-    }
     return transaction = {
       softwareVersion: _softwareVersion,
       queue: queueName,
@@ -943,8 +942,8 @@
       enqueuedBy: username,
       status: "Queued",
       data: {},
-      instructions: [],
-      rollback: implicitRollbackInstructions ? null : [],
+      instructions: instructions != null ? instructions : [],
+      rollback: rollback,
       execution: {
         state: [],
         errors: [],

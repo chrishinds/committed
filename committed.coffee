@@ -102,17 +102,19 @@ exports.start = (db, optionals..., done) ->
 exports.stop = (done) ->
     if _state is 'stopped'
         return done( new Error("committed is not currently started") )
-    #stop accepting new transactions
-    _state = 'stopped'
-    #drain every queue we have available (even the GlobalLock)
-    _drainQueues ( name for name of _queues ), done
+    #stop accepting new transactions, but yield to eventloop first to give
+    #anything recently queued a chance to get going
+    setImmediate () ->
+        _state = 'stopped'
+        #drain every queue we have available (even the GlobalLock)
+        _drainQueues ( name for name of _queues ), done
 
 
 _drainQueues = (queues, done) ->
-    # wait until every _queue's _queueLength is 0, check every 10ms
+    # wait until every _queue's _queueLength is 0, and there are no immediate transactions in progress, check every 10ms
     async.until(
         () ->
-            (_queueLength[name] is 0 for name in queues).every((x) -> x)
+            (_queueLength[name] is 0 for name in queues).every((x) -> x) and _immediateCounter is 0
         , (untilBodyDone) ->
             setTimeout untilBodyDone, 10
         , (err) ->
@@ -629,7 +631,7 @@ exports.db =
                 return done(null, true)
 
 
-exports.transaction = (queueName, username, implicitRollbackInstructions=true) ->
+exports.transaction = (queueName, username, instructions, rollback) ->
     transaction =
         softwareVersion: _softwareVersion
         queue: queueName
@@ -640,8 +642,8 @@ exports.transaction = (queueName, username, implicitRollbackInstructions=true) -
         enqueuedBy: username
         status: "Queued"
         data: {}
-        instructions: []
-        rollback: if implicitRollbackInstructions then null else []
+        instructions: if instructions? then instructions else []
+        rollback: rollback
         execution:
             state: []
             errors: []

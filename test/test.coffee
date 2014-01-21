@@ -25,6 +25,11 @@ before (done) ->
     committed.register 'errorMethod', errorMethod
     committed.register 'errorMethodRollback', committed.db.pass
 
+    blockingMethod = (db, transaction, state, args, done) ->
+        setTimeout (()-> done(null, true)), 1000
+    committed.register 'blockingMethod', blockingMethod
+    committed.register 'blockingMethodRollback', committed.db.pass
+    
     # Connect to the database
     dbaddress = 'mongodb://' + dbconfig.server + '/' + dbconfig.database
 
@@ -121,10 +126,9 @@ describe 'Committed', ->
                     for q in [1..10]
                         do (q) ->
                             tasks.push (done) ->
-                                transaction = committed.transaction "testQ#{q}"
-                                transaction.instructions.push
-                                    name: 'db.insert'
-                                    arguments: ['validOpsTest', {t:t, q:q}]
+                                transaction = committed.transaction "testQ#{q}", 'user', [
+                                    name: 'db.insert', arguments: ['validOpsTest', {t:t, q:q}]
+                                ]
                                 committed.enqueue transaction, (err, status) ->
                                     should.not.exist err
                                     status.should.be.string 'Committed'
@@ -136,11 +140,6 @@ describe 'Committed', ->
     describe 'global lock', ->
 
         before (done) ->
-            blockingMethod = (db, transaction, state, args, done) ->
-                    setTimeout (()-> done(null, true)), 1000
-            committed.register 'blockingMethod', blockingMethod
-            committed.register 'blockingMethodRollback', committed.db.pass
-
             committed.start _db, 'testSoftwareVersion', (err) ->
                 should.not.exist err
                 _db.createCollection 'globalLockTest', done
@@ -157,20 +156,20 @@ describe 'Committed', ->
                 status.should.equal 'Committed'
 
                 # after the global lock transaction is finished, make sure the queues are open again
-                nonGlobalTransaction = committed.transaction 'nonGlobal', 'user', false
+                nonGlobalTransaction = committed.transaction 'nonGlobal', 'user', [], []
                 committed.enqueue nonGlobalTransaction, (err, status) ->
                     status.should.equal 'Committed'
                     done(err)
 
-            nonGlobalTransaction = committed.transaction 'nonGlobal'
+            nonGlobalTransaction = committed.transaction 'nonGlobal', 'user', [], []
             committed.enqueue nonGlobalTransaction, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Failed'
 
         it 'should suspend and resume immediate processing when processing a GlobalLock transaction', (done) ->
-            globalTransaction = committed.transaction 'GlobalLock', 'user'
-            globalTransaction.instructions.push
+            globalTransaction = committed.transaction 'GlobalLock', 'user', [
                 name: 'blockingMethod'
+            ]
             committed.withGlobalLock globalTransaction, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Committed'
@@ -186,9 +185,8 @@ describe 'Committed', ->
                 status.should.equal 'Failed'
 
         it 'should wait for transactions in other queues to finish before starting a global lock transaction', (done) ->
-            ot = committed.transaction 'OrdinaryQueue', 'user'
             doc = now: new Date()
-            ot.instructions = [
+            ot = committed.transaction 'OrdinaryQueue', 'user', [
                 {name: 'blockingMethod'}
                 {name: 'db.insert', arguments: ['globalLockTest', doc]}
             ]
@@ -204,8 +202,9 @@ describe 'Committed', ->
                         instructionDone(null, true)
             committed.register 'globalLockTestMethod', globalLockTestMethod
             committed.register 'globalLockTestMethodRollback', committed.db.pass
-            gt = committed.transaction 'GlobalLock', 'user'
-            gt.instructions = [ {name: 'globalLockTestMethod'} ]
+            gt = committed.transaction 'GlobalLock', 'user', [
+                {name: 'globalLockTestMethod'} 
+            ]
 
             committed.enqueue ot, (err, status) ->
                 should.not.exist err
@@ -215,36 +214,69 @@ describe 'Committed', ->
                 status.should.equal 'Committed'
                 done()
 
-        # it 'should wait for immediate transactions to complete before starting a global lock', (done) ->
-        #     doc = now: new Date()
-        #     im = committed.transaction null, 'user', [
-        #         {name: 'blockingMethod'}
-        #         {name: 'db.insert', arguments: ['globalLockTest', doc]}
-        #     ]
-            
+        it 'should wait for immediate transactions to complete before starting a global lock', (done) ->
+            doc = now: new Date()
+            im = committed.transaction null, 'user', [
+                {name: 'blockingMethod'}
+                {name: 'db.insert', arguments: ['globalLockTest', doc]}
+            ]
+            globalImmediateTestMethod = (db, transaction, state, args, instructionDone) ->
+                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+                    if err? then return instructionDone(err)
+                    collection.find(doc).toArray (err, docs) ->
+                        #these ensure that the insert has already happened,
+                        #and hence that our global transaction has correctly
+                        #waited
+                        docs.length.should.equal 1
+                        docs[0].now.should.deep.equal doc.now
+                        instructionDone(null, true)
+            committed.register 'globalImmediateTestMethod', globalImmediateTestMethod
+            committed.register 'globalImmediateTestMethodRollback', committed.db.pass
+            gt = committed.transaction 'GlobalLock', 'user', [ name: 'globalImmediateTestMethod' ]
+            committed.immediately im, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.withGlobalLock gt, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                done()
 
-        #     globalLockTestMethod = (db, transaction, state, args, instructionDone) ->
-        #         db.collection 'globalLockTest', {strict:true}, (err, collection) ->
-        #             if err? then return instructionDone(err)
-        #             collection.find(doc).toArray (err, docs) ->
-        #                 #these ensure that the insert has already happened,
-        #                 #and hence that our global transaction has correctly
-        #                 #waited
-        #                 docs.length.should.equal 1
-        #                 docs[0].now.should.deep.equal doc.now
-        #                 instructionDone(null, true)
-        #     committed.register 'globalLockTestMethod', globalLockTestMethod
-        #     committed.register 'globalLockTestMethodRollback', committed.db.pass
-        #     gt = committed.transaction 'GlobalLock', 'user'
-        #     gt.instructions = [ {name: 'globalLockTestMethod'} ]
+    describe 'stop', ->
 
-        #     committed.enqueue ot, (err, status) ->
-        #         should.not.exist err
-        #         status.should.equal 'Committed'
-        #     committed.withGlobalLock gt, (err, status) ->
-        #         should.not.exist err
-        #         status.should.equal 'Committed'
-        #         done()            
+        beforeEach (done) ->
+            committed.start _db, 'testSoftwareVersion', (err) ->
+                should.not.exist err
+                _db.createCollection 'stopTest', (err, collection) -> 
+                    if err? then return done(err)
+                    collection.remove {}, {w:1}, done
+
+        afterEach (done) ->
+            committed.stop done
+
+        it 'should wait for immediate, enqueued, and global lock tasks to complete before stopping', (done) ->
+            doc1 = inserted: 'beforeStop'
+            doc2 = inserted: 'beforeStop'
+            doc3 = inserted: 'beforeStop'
+            im = committed.transaction null, 'user', [ {name: 'db.insert', arguments: ['stopTest', doc1]} ]
+            gt = committed.transaction 'GlobalLock', 'user', [{name: 'db.insert', arguments: ['stopTest', doc2]}]
+            ot = committed.transaction 'OrdinaryQueue', 'user', [{name: 'db.insert', arguments: ['stopTest', doc3]}]
+            committed.immediately im, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.enqueue ot, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.withGlobalLock gt, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            # setTimeout (()-> done()), 1000
+            committed.stop (err) ->
+                should.not.exist err
+                _db.collection 'stopTest', {strict:true}, (err, collection) ->
+                    collection.find({inserted: 'beforeStop'}).toArray (err, docs) ->
+                        docs.length.should.equal 3
+                        done()
+
 
     describe 'rollback', ->
 
@@ -269,13 +301,10 @@ describe 'Committed', ->
 
         it 'should rollback an errored transaction and return status FailedCommitErrorRollbackOk', (done) ->
             docA = {foo:true}
-            transaction = committed.transaction 'rollbackTest', 'user', false
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['rollbackTest', docA]
-            transaction.instructions.push
-                name: 'errorMethod'
-            transaction.rollback = [
+            transaction = committed.transaction 'rollbackTest', 'user', [
+                {name: 'db.insert', arguments: ['rollbackTest', docA]}
+                {name: 'errorMethod'}
+            ], [
                 {name: 'db.insertRollback', arguments: ['rollbackTest', docA]}
                 {name: 'db.pass'}
             ]
@@ -290,13 +319,11 @@ describe 'Committed', ->
         it 'should not execute rollbacks for instructions which were not executed, nor execute further instructions after an error', (done) ->
             docA = {foo:true}
             docB = {bar:true}
-            transaction = committed.transaction 'rollbackTest', 'user', false
-            transaction.instructions = [
+            transaction = committed.transaction 'rollbackTest', 'user', [
                 {name: 'db.insert', arguments: ['rollbackTest', docA]}
                 {name: 'errorMethod'}
                 {name: 'db.insert', arguments: ['rollbackTest', docB]}
-            ]
-            transaction.rollback = [
+            ], [
                 {name: 'db.insertRollback', arguments: ['rollbackTest', docA]}
                 {name: 'db.pass'}
                 {name: 'errorMethod'}
@@ -313,12 +340,10 @@ describe 'Committed', ->
 
         it 'should rollback a failed transaction and return status Failed', (done) ->
             doc = {rolledback: false}
-            transaction = committed.transaction 'rollbackTest', 'user', false
-            transaction.instructions = [
+            transaction = committed.transaction 'rollbackTest', 'user', [
                 {name: 'db.insert', arguments: ['rollbackTest', doc]}
                 {name: 'failMethod'}
-            ]
-            transaction.rollback = [ #do a phony rollback which updates the doc so we can see it's all worked
+            ], [
                 {name: 'db.updateOneOp', arguments: ['rollbackTest', doc, {__set: rolledback: true}, {}]}
                 {name: 'db.pass'}
             ]
@@ -331,14 +356,13 @@ describe 'Committed', ->
 
         it 'should report a catastrophe if a rollback fails after an error', (done) ->
             doc = content: 'agogo'
-            transaction = committed.transaction 'rollbackTest', 'user', false
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['rollbackTest', doc]
-            transaction.instructions.push
-                name: 'errorMethod' #this will error the transaction
-            #now error the rollback
-            transaction.rollback= [ {name: 'errorMethod'}, {name: 'errorMethod'} ]
+            transaction = committed.transaction 'rollbackTest', 'user', [
+                {name: 'db.insert', arguments: ['rollbackTest', doc]}
+                {name: 'errorMethod'} #this will error the transaction
+            ], [
+                {name: 'errorMethod'}
+                {name: 'errorMethod'} 
+            ]
             committed.enqueue transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitErrorRollbackError'
                 err.should.equal 'Supposed to fail'
@@ -346,31 +370,23 @@ describe 'Committed', ->
 
         it 'should report a catastrophe if a rollback fails after a failure', (done) ->
             doc = content: 'agogo'
-            transaction = committed.transaction 'rollbackTest', 'user', false
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['rollbackTest', doc]
-            transaction.instructions.push
-                name: 'failMethod'
-            transaction.rollback.push
-                name: 'failMethod'
-            transaction.rollback.push
-                name: 'failMethod'
+            transaction = committed.transaction 'rollbackTest', 'user', [
+                {name: 'db.insert', arguments: ['rollbackTest', doc]}
+                {name: 'failMethod'}
+            ], [
+                {name: 'failMethod'}
+                {name: 'failMethod'}
+            ]
             committed.enqueue transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitFailedRollbackError'
                 done(err)
 
         it 'should use implicit rollbacks when the transaction.rollback array is null', (done) ->
-            transaction = committed.transaction 'rollbackTest'
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['rollbackTest', {content: 'great content'}]
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['rollbackTest', {content: 'more great content'}]
-            transaction.instructions.push
-                name: 'failSlowlyMethod'
-                arguments: []
+            transaction = committed.transaction 'rollbackTest', 'user', [
+                {name: 'db.insert', arguments: ['rollbackTest', {content: 'great content'}]}
+                {name: 'db.insert', arguments: ['rollbackTest', {content: 'more great content'}]}
+                {name: 'failSlowlyMethod', arguments: []}
+            ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Failed'
@@ -470,10 +486,9 @@ describe 'Committed', ->
 
         it 'insert should reach mongo, and be issued with an _id', (done) ->
             doc = {t:'t', q:'q'}
-            transaction = committed.transaction "test"
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['instructionsTest', doc]
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', doc]}
+            ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
@@ -486,10 +501,9 @@ describe 'Committed', ->
 
         it 'insert should work with multiple documents', (done) ->
             docs = ( {i: i} for i in [0..10] )
-            transaction = committed.transaction "test"
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['instructionsTest', docs]
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', docs]}
+            ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
@@ -501,17 +515,13 @@ describe 'Committed', ->
 
         it 'insertRollback should undo insert for multiple documents', (done) ->
             docs = ( {i: i} for i in [0..10] )
-            transaction = committed.transaction "test", 'user', false
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['instructionsTest', docs]
-            transaction.instructions.push
-                name: 'failMethod'
-            transaction.rollback.push
-                name: 'db.insertRollback'
-                arguments: ['instructionsTest', docs]
-            transaction.rollback.push
-                name: 'db.pass'
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', docs]}
+                {name: 'failMethod'}
+            ], [
+                {name: 'db.insertRollback', arguments: ['instructionsTest', docs]}
+                {name: 'db.pass'}
+            ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Failed'
@@ -523,18 +533,19 @@ describe 'Committed', ->
 
         it 'updateOneOp should update only one document', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            transaction = committed.transaction "test"
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['instructionsTest', docs]
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', docs]}
+            ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                update = committed.transaction "test"
                 ids = ( d._id for d in docs )
-                update.instructions.push
-                    name: 'db.updateOneOp'
-                    arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.updateOneOp'
+                        arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                    }
+                ]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
@@ -545,10 +556,9 @@ describe 'Committed', ->
 
         it 'updateOneOpRollback should undo an updateOneOp', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            transaction = committed.transaction "test"
-            transaction.instructions.push
-                name: 'db.insert'
-                arguments: ['instructionsTest', docs]
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', docs]}
+            ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
@@ -560,12 +570,14 @@ describe 'Committed', ->
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
-                    rollback = committed.transaction "test", 'user', false
-                    rollback.instructions.push
-                        name: 'db.updateOneOpRollback'
-                        arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
-                    rollback.rollback.push #non-implicit transactions must have explicit rollback instructions
-                        name: 'db.pass'
+                    rollback = committed.transaction "test", 'user', [
+                        {
+                            name: 'db.updateOneOpRollback'
+                            arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                        }
+                    ], [
+                            name: 'db.pass'
+                    ]
                     committed.enqueue rollback, (err,status) ->
                         should.not.exist err
                         status.should.be.string 'Committed'
@@ -643,11 +655,9 @@ describe 'Committed', ->
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
-                    rollback = committed.transaction "test", 'user', false
-                    rollback.instructions.push
-                        name: 'db.revisionedUpdateRollback'
-                        arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
-                    rollback.rollback = [
+                    rollback = committed.transaction "test", 'user', [
+                        {name: 'db.revisionedUpdateRollback', arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]}
+                    ], [
                         {name: 'db.pass'}
                     ]
                     committed.enqueue rollback, (err, status) ->
@@ -688,7 +698,7 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = masterDoc._id
-                update = committed.transaction "test", 'user', false
+                update = committed.transaction "test", 'user', [], []
                 update.instructions.push
                     name: 'db.revisionedUpdate'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
@@ -714,26 +724,10 @@ describe 'Committed', ->
 
 ###
 
-enqueue is dependent on db writes before it sets essential state, which makes it hard to use, possibly not orderful. 
-
-
-
-
-setImmediate isn't finished before a global lock starts.
 
 revision updateOneOp and insert
 
-can't stop committed when its in 'locked'
-
-
-test rollback ordering
-
 test for restartability of instructions, esp for rollback.
-
-stopping finishes all tasks.
-
-global lock treats existing tasks nicely
-
 
 ---
 

@@ -185,6 +185,43 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.equal 'Failed'
 
+        it 'should wait for transactions in other queues to finish before starting a global lock transaction', (done) ->
+            ot = committed.transaction 'OrdinaryQueue', 'user'
+            doc = now: new Date()
+            ot.instructions = [
+                {name: 'blockingMethod'}
+                {name: 'db.insert', arguments: ['globalLockTest', doc]}
+            ]
+            globalLockTestMethod = (db, transaction, state, args, instructionDone) ->
+                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+                    if err? then return instructionDone(err)
+                    collection.find(doc).toArray (err, docs) ->
+                        #these ensure that the insert has already happened,
+                        #and hence that our global transaction has correctly
+                        #waited
+                        docs.length.should.equal 1
+                        docs[0].now.should.deep.equal doc.now
+                        instructionDone(null, true)
+            committed.register 'globalLockTestMethod', globalLockTestMethod
+            committed.register 'globalLockTestMethodRollback', committed.db.pass
+            gt = committed.transaction 'GlobalLock', 'user'
+            gt.instructions = [ {name: 'globalLockTestMethod'} ]
+
+            committed.enqueue ot, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            #give the ot a chance to enqueue
+            setTimeout( 
+                () ->
+                    committed.withGlobalLock gt, (err, status) ->
+                        should.not.exist err
+                        status.should.equal 'Committed'
+                        done()
+                , 100
+            )
+
+        it 'should wait for immediate transactions to complete before starting a global lock'
+
     describe 'rollback', ->
 
         before (done) ->
@@ -653,9 +690,12 @@ describe 'Committed', ->
 
 ###
 
+
+setImmediate isn't finished before a global lock starts.
+
 revision updateOneOp and insert
 
-remove simon's old instructions.
+can't stop committed when its in 'locked'
 
 
 test rollback ordering

@@ -2,6 +2,7 @@ async = require 'async'
 ObjectID = require('mongodb').ObjectID
 
 _state = 'stopped'
+_queueLength = {}
 _queues = null
 _db = null
 _registry = {}
@@ -82,6 +83,7 @@ exports.start = (db, optionals..., done) ->
         #drain (for good reason) and so start needs to put it back.
         _queues =
             GlobalLock: async.queue(commit, 1)
+        _queueLength.GlobalLock = 0
         _queues.GlobalLock.drain = () ->
             #if our global lock queue is now empty, make sure to restart the other queues
             _state = 'started'
@@ -94,7 +96,7 @@ exports.start = (db, optionals..., done) ->
 #queues this should include draining the GlobalLock queue, and we should be
 #careful to respect how _state is used by GlobalLock
 exports.stop = (done) ->
-    if _state isnt 'started'
+    if _state is 'stopped'
         return done( new Error("committed is not currently started") )
     #stop accepting new transactions
     _state = 'stopped'
@@ -103,23 +105,15 @@ exports.stop = (done) ->
 
 
 _drainQueues = (queues, done) ->
-    #create a task to drain each queue
-    tasks = []
-    for name in queues
-        do (name) ->
-            tasks.push (done) ->
-                if _queues[name].length() is 0
-                    #if queue is empty then nothing more to do
-                    return done(null, null)
-                else
-                    #add a drain to the queue to callback after the last task is completed
-                    _queues[name].drain = () ->
-                        done(null, null)
-    #run the drain tasks and wait for the queues to empty
-    async.parallel tasks, (err, results) ->
-        #unset the drain of every queue
-        _queues[name].drain = undefined for name in queues
-        done(err)
+    # wait until every _queue's _queueLength is 0, check every 10ms
+    async.until(
+        () ->
+            (_queueLength[name] is 0 for name in queues).every((x) -> x)
+        , (untilBodyDone) ->
+            setTimeout untilBodyDone, 10
+        , (err) ->
+            done(err)
+    )
 
 
 #can throw Error
@@ -155,9 +149,12 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
     if not _queues[queueName]?
         #the commit fn will be the queue worker; only one worker per queue for sequentiality
         _queues[queueName] = async.queue(commit, 1)
-        #note: we could add a drain to this queue to delete on completion. this
-        #would minimise memory at the expense of speed.
-    _queues[queueName].push transaction, done
+        _queueLength[queueName] = 0
+    #we're about to add an item to the queue, so increment the queue count
+    _queueLength[queueName] += 1
+    _queues[queueName].push transaction, (etc...) ->
+        _queueLength[queueName] -= 1
+        done(etc...)
 
 _checkTransaction = (transaction) ->
     if transaction.status? and transaction.status isnt 'Queued'
@@ -200,6 +197,9 @@ exports.enqueue = (transaction, done) ->
         if _state is 'started'
             return _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
         else
+            #we're at state 'locked' or 'stopped', either way fail the
+            #transaction and save it to the db so we can see our failures
+            transaction.execution.info.push "unable to execute instruction, committed was at state '#{_state}'"
             _updateTransactionStatus transaction, transaction.status, 'Failed', (err) ->
                 return done(err, 'Failed')
     #check we've got a valid queuename in the transaction.
@@ -234,6 +234,7 @@ exports.immediately = (transaction, done) ->
         if _state is 'started'
             return commit transaction, done
         else
+            transaction.execution.info.push "unable to execute instruction, committed was at state '#{_state}'"
             _updateTransactionStatus transaction, transaction.status, 'Failed', (err) ->
                 return done(err, 'Failed')
 
@@ -270,7 +271,8 @@ exports.withGlobalLock = (transaction, done) ->
             if err? then return done(err, null)
             #we will rely on the special drain set up on GlobalLock made
             #during committed.start, to restore business as usual
-            _queues['GlobalLock'].push transaction, done
+            #GlobalLock is created at start, so it won't be created with the following:
+            _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
 
     #set essential values so the transaction can be saved
     transaction.status = if _state isnt 'stopped' then "Queued" else "Failed"
@@ -371,6 +373,7 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, done) ->
             enqueuedAt: transaction.enqueuedAt
             startedAt: transaction.startedAt
             lastUpdatedAt: new Date()
+            execution: transaction.execution
         }},
         {w:1, journal: true}, (err, updated) ->
             switch

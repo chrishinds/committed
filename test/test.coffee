@@ -210,17 +210,41 @@ describe 'Committed', ->
             committed.enqueue ot, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Committed'
-            #give the ot a chance to enqueue
-            setTimeout( 
-                () ->
-                    committed.withGlobalLock gt, (err, status) ->
-                        should.not.exist err
-                        status.should.equal 'Committed'
-                        done()
-                , 100
-            )
+            committed.withGlobalLock gt, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                done()
 
-        it 'should wait for immediate transactions to complete before starting a global lock'
+        # it 'should wait for immediate transactions to complete before starting a global lock', (done) ->
+        #     doc = now: new Date()
+        #     im = committed.transaction null, 'user', [
+        #         {name: 'blockingMethod'}
+        #         {name: 'db.insert', arguments: ['globalLockTest', doc]}
+        #     ]
+            
+
+        #     globalLockTestMethod = (db, transaction, state, args, instructionDone) ->
+        #         db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+        #             if err? then return instructionDone(err)
+        #             collection.find(doc).toArray (err, docs) ->
+        #                 #these ensure that the insert has already happened,
+        #                 #and hence that our global transaction has correctly
+        #                 #waited
+        #                 docs.length.should.equal 1
+        #                 docs[0].now.should.deep.equal doc.now
+        #                 instructionDone(null, true)
+        #     committed.register 'globalLockTestMethod', globalLockTestMethod
+        #     committed.register 'globalLockTestMethodRollback', committed.db.pass
+        #     gt = committed.transaction 'GlobalLock', 'user'
+        #     gt.instructions = [ {name: 'globalLockTestMethod'} ]
+
+        #     committed.enqueue ot, (err, status) ->
+        #         should.not.exist err
+        #         status.should.equal 'Committed'
+        #     committed.withGlobalLock gt, (err, status) ->
+        #         should.not.exist err
+        #         status.should.equal 'Committed'
+        #         done()            
 
     describe 'rollback', ->
 
@@ -689,6 +713,10 @@ describe 'Committed', ->
 
 
 ###
+
+enqueue is dependent on db writes before it sets essential state, which makes it hard to use, possibly not orderful. 
+
+
 
 
 setImmediate isn't finished before a global lock starts.

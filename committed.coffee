@@ -3,6 +3,7 @@ ObjectID = require('mongodb').ObjectID
 
 _state = 'stopped'
 _queueLength = {}
+_immediateCounter = 0
 _queues = null
 _db = null
 _registry = {}
@@ -27,6 +28,9 @@ exports.start = (db, optionals..., done) ->
     _softwareVersion = optionals[0]
     _pkFactory = if optionals[1]? then new optionals[1]() else new DefaultPkFactory()
     _db = db
+    #reset this state too during start
+    _queueLength = {}
+    _immediateCounter = 0
 
     tasks = []
 
@@ -78,12 +82,12 @@ exports.start = (db, optionals..., done) ->
     async.series tasks, (err, results) ->
         if err? then return done(err)
         #re-create the _queue object, initially this should just contain the
-        #GlobalLock queue, others will be created as needed. We create the
-        #GlobalLock queue here at the end of start because stop will reset the
-        #drain (for good reason) and so start needs to put it back.
+        #GlobalLock queue, others will be created as needed. 
         _queues =
-            GlobalLock: async.queue(commit, 1)
+            #globallock has a special worker function
+            GlobalLock: async.queue(commitWithGlobalLock, 1)
         _queueLength.GlobalLock = 0
+        #it also has a special drain
         _queues.GlobalLock.drain = () ->
             #if our global lock queue is now empty, make sure to restart the other queues
             _state = 'started'
@@ -193,16 +197,6 @@ _setUpTransaction = (transaction) ->
 
 exports.enqueue = (transaction, done) ->
     transaction.enqueuedAt = new Date()
-    enqueue = () ->
-        if _state is 'started'
-            return _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
-        else
-            #we're at state 'locked' or 'stopped', either way fail the
-            #transaction and save it to the db so we can see our failures
-            transaction.execution.info.push "unable to execute instruction, committed was at state '#{_state}'"
-            _updateTransactionStatus transaction, transaction.status, 'Failed', (err) ->
-                return done(err, 'Failed')
-    #check we've got a valid queuename in the transaction.
     if transaction.queue is "GlobalLock"
         return done( new Error("Can't queue a transaction for GlobalLock using the committed.enqueue function"), null)
     if not transaction.queue?.length
@@ -211,33 +205,21 @@ exports.enqueue = (transaction, done) ->
     if error? then return done( error, null ) 
 
     #Yield to the event loop before performing state check. This ensures that
-    #any drains are allowed time to run
+    #any drains are allowed time to run (eg. there's one on the GlobalLock queue)
     setImmediate () ->
-        transaction.status = if _state is 'started' then "Queued" else "Failed"
-
-        #if we have got here then we intend at least to save the transaction, so
-        #set some essential values. This includes setting the queue position
-        _queuePosition transaction.queue, (err, position) ->
-            transaction.position = position
-            _setUpTransaction(transaction)
-            return _transactionsCollection.insert transaction, (err, docs) ->
-                if err? then return done(err, null)
-                #transaction has been written to the db, we're ready to enqueue, or bail if we've failed
-                return enqueue()
+        if _state is 'started'
+            transaction.status = 'Queued'
+            return _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
+        else
+            transaction.status = 'Failed'
+            transaction.execution.info.push "unable to enquue transaction, committed was at state '#{_state}'"
+            return done(null, 'Failed')
 
 
 exports.immediately = (transaction, done) ->
     #no queue necessary, commit straight away, useful for inserts, but where you need a transaction as an audit record.
     # but as above, respect _state, and fail otherwise.
     transaction.enqueuedAt = new Date()
-    go = () ->
-        if _state is 'started'
-            return commit transaction, done
-        else
-            transaction.execution.info.push "unable to execute instruction, committed was at state '#{_state}'"
-            _updateTransactionStatus transaction, transaction.status, 'Failed', (err) ->
-                return done(err, 'Failed')
-
     if transaction.queue?
         return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it"))
     error = _checkTransaction(transaction)
@@ -246,14 +228,18 @@ exports.immediately = (transaction, done) ->
     #Yield to the event loop before performing state check. This ensures that
     #any drains are allowed time to run
     setImmediate () ->
-        transaction.status = if _state is 'started' then "Queued" else "Failed"
-        #if we set the position to -1 then during start up if we want to process an immediate task it will get done first.
-        transaction.position = -1
-        _setUpTransaction(transaction)
-        _transactionsCollection.insert transaction, (err, docs) ->
-            if err? then return done(err, null)
-            #transaction has been written to the db, it can be executed, immediately
-            return go()
+        if _state is 'started'
+            transaction.status = 'Queued'
+            transaction.position = -1
+            _setUpTransaction(transaction)
+            _immediateCounter += 1
+            return commit transaction, (etc...) ->
+                _immediateCounter -= 1
+                done(etc...)
+        else
+            transaction.status = 'Failed'
+            transaction.execution.info.push "unable to execute transaction immediately, committed was at state '#{_state}'"
+            return done(null, 'Failed')
 
 
 exports.withGlobalLock = (transaction, done) ->
@@ -263,38 +249,21 @@ exports.withGlobalLock = (transaction, done) ->
         return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
     error = _checkTransaction(transaction)
     if error? then return done( error, null ) 
-
     transaction.enqueuedAt = new Date()
-    enqueue = () ->
-        #drain all non-GlobalLock queues
-        _drainQueues ( name for name of _queues when name isnt 'GlobalLock' ), (err) ->
-            if err? then return done(err, null)
-            #we will rely on the special drain set up on GlobalLock made
-            #during committed.start, to restore business as usual
-            #GlobalLock is created at start, so it won't be created with the following:
-            _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
-
-    #set essential values so the transaction can be saved
-    transaction.status = if _state isnt 'stopped' then "Queued" else "Failed"
-    #this includes setting the queue position
-    _queuePosition transaction.queue, (err, position) ->
-        transaction.position = position
-        _setUpTransaction(transaction)
-        # lock down the other queues before doing the DB operation as that
-        # will take some time
-        if _state isnt 'stopped'
-            oldState = _state
+    #because exports.enqueue will yield to the event loop before pushing to
+    #async.queue, we should also, otherwise we may inadvertently overtake a
+    #previous call. setImmediate will preserve order. 
+    setImmediate () ->
+        if _state isnt 'stopped' 
+            #then this transaction is good to proceed
+            transaction.status = "Queued" 
             _state = 'locked'
-
-        return _transactionsCollection.insert transaction, (err, docs) ->
-            if err?
-                # Put the state back the way we found it
-                _state = oldState
-                return done(err, null)
-            if _state is 'stopped'
-                return done(null, 'Failed')
-            else
-                return enqueue()
+            _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
+        else 
+            #committed is 'stopped'
+            transaction.status = "Failed"
+            transaction.execution.info.push "unable to enqueue transaction withGlobalLock, committed was at state '#{_state}'"
+            return done(null, 'Failed')
 
 
 _registryFind = (name) ->
@@ -467,36 +436,45 @@ rollback = (transaction, results, done) ->
                 done(null, newStatus)
 
 
-commit = (transaction, done) ->
-    doCommit = (err) ->
+#worker function for the GlobalLock queue
+commitWithGlobalLock = (transaction, done) ->
+    return _drainQueues ( name for name of _queues when name isnt 'GlobalLock' ), (err) ->
         if err? then return done(err, null)
-        #transaction is now at 'Processing' status, we can now execute its instructions.
-        execute transaction.instructions, transaction.execution.state, transaction, (err, results) ->
-            if err?
-                return _pushTransactionError transaction, err, () ->
-                    #if there's been an error in execution then we need to rollback everything
-                    return rollback transaction, results, done
-            else if results.length is transaction.instructions.length and results.every( (x) -> x )
-                #then the transaction has succeeded.
-                return _updateTransactionStatus transaction, 'Processing', 'Committed', (err) ->
-                    return done(err, 'Committed')
-            else
-                #the transaction has (legitimately) failed
-                failureInfo = "legitimate transaction failure, instruction results: #{JSON.stringify results}"
-                transaction.execution.info.push failureInfo
-                return _transactionsCollection.update {_id: transaction._id}, {$push: {'execution.info': failureInfo}}, {w:1, journal: true}, (err, updated) ->
-                    #log these errors but don't pass them up
-                    if err? then console.log "error saving error to transaction: #{err}"
-                    return rollback transaction, results, done
+        commit(transaction, done)
 
+#worker function for regular queues 
+commit = (transaction, done) ->
     #is this transaction at queued status?
     if transaction.status isnt 'Queued'
         return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status})"), null )
-    transaction.status = 'Processing'
-    transaction.startedAt = new Date()
-    return _updateTransactionStatus transaction, 'Queued', 'Processing', doCommit
-
-
+    #the transaction is ready to execute
+    # give the transaction a queue position
+    return _queuePosition transaction.queue, (err, position) ->
+        transaction.position = position
+        transaction.status = 'Processing'
+        transaction.startedAt = new Date()
+        _setUpTransaction(transaction)
+        #save the transaction so that if we crash we'll have a record of it in the db
+        return _transactionsCollection.insert transaction, (err, docs) ->
+            if err? then return done(err, null)
+            #transaction has been written to the db, we're ready to execute instructions
+            execute transaction.instructions, transaction.execution.state, transaction, (err, results) ->
+                if err?
+                    return _pushTransactionError transaction, err, () ->
+                        #if there's been an error in execution then we need to rollback everything
+                        return rollback transaction, results, done
+                else if results.length is transaction.instructions.length and results.every( (x) -> x )
+                    #then the transaction has succeeded.
+                    return _updateTransactionStatus transaction, 'Processing', 'Committed', (err) ->
+                        return done(err, 'Committed')
+                else
+                    #the transaction has (legitimately) failed
+                    failureInfo = "legitimate transaction failure, instruction results: #{JSON.stringify results}"
+                    transaction.execution.info.push failureInfo
+                    return _transactionsCollection.update {_id: transaction._id}, {$push: {'execution.info': failureInfo}}, {w:1, journal: true}, (err, updated) ->
+                        #log these errors but don't pass them up
+                        if err? then console.log "error saving error to transaction: #{err}"
+                        return rollback transaction, results, done
 
 
 _updateOneOptions =

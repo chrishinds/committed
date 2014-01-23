@@ -41,7 +41,7 @@ before (done) ->
 
 describe 'Committed', ->
 
-    describe 'startup', ->
+    describe 'start', ->
 
         it 'should start without error', (done) ->
             committed.start _db, 'testSoftwareVersion', (err) ->
@@ -147,7 +147,7 @@ describe 'Committed', ->
         after (done) ->
             committed.stop done
 
-        it 'should close and reopen normal queues when processing a GlobalLock transaction', (done) ->
+        it 'should let normal queues process after a GlobalLock transaction', (done) ->
             globalTransaction = committed.transaction 'GlobalLock', 'user'
             globalTransaction.instructions.push
                 name: 'blockingMethod'
@@ -161,12 +161,7 @@ describe 'Committed', ->
                     status.should.equal 'Committed'
                     done(err)
 
-            nonGlobalTransaction = committed.transaction 'nonGlobal', 'user', [], []
-            committed.enqueue nonGlobalTransaction, (err, status) ->
-                should.not.exist err
-                status.should.equal 'Failed'
-
-        it 'should suspend and resume immediate processing when processing a GlobalLock transaction', (done) ->
+        it 'should let immediate transactions process after a GlobalLock transaction', (done) ->
             globalTransaction = committed.transaction 'GlobalLock', 'user', [
                 name: 'blockingMethod'
             ]
@@ -179,26 +174,29 @@ describe 'Committed', ->
                     status.should.equal 'Committed'
                     done(err)
 
-            immediateTransaction = committed.transaction()
-            committed.immediately immediateTransaction, (err, status) ->
-                should.not.exist err
-                status.should.equal 'Failed'
-
         it 'should wait for transactions in other queues to finish before starting a global lock transaction', (done) ->
-            doc = now: new Date()
-            ot = committed.transaction 'OrdinaryQueue', 'user', [
+            d = new Date()
+            doc1 = now: d; doc2 = now: d; doc3 = now: d
+            ot1 = committed.transaction 'q1', 'user', [
                 {name: 'blockingMethod'}
-                {name: 'db.insert', arguments: ['globalLockTest', doc]}
+                {name: 'db.insert', arguments: ['globalLockTest', doc1]}
+            ]
+            ot2 = committed.transaction 'q2', 'user', [
+                {name: 'blockingMethod'}
+                {name: 'db.insert', arguments: ['globalLockTest', doc2]}
+            ]
+            ot3 = committed.transaction 'q3', 'user', [
+                {name: 'blockingMethod'}
+                {name: 'db.insert', arguments: ['globalLockTest', doc3]}
             ]
             globalLockTestMethod = (db, transaction, state, args, instructionDone) ->
                 db.collection 'globalLockTest', {strict:true}, (err, collection) ->
                     if err? then return instructionDone(err)
-                    collection.find(doc).toArray (err, docs) ->
+                    collection.find({now: d}).toArray (err, docs) ->
                         #these ensure that the insert has already happened,
                         #and hence that our global transaction has correctly
                         #waited
-                        docs.length.should.equal 1
-                        docs[0].now.should.deep.equal doc.now
+                        docs.length.should.equal 3
                         instructionDone(null, true)
             committed.register 'globalLockTestMethod', globalLockTestMethod
             committed.register 'globalLockTestMethodRollback', committed.db.pass
@@ -206,7 +204,13 @@ describe 'Committed', ->
                 {name: 'globalLockTestMethod'} 
             ]
 
-            committed.enqueue ot, (err, status) ->
+            committed.enqueue ot1, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.enqueue ot2, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.enqueue ot3, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Committed'
             committed.withGlobalLock gt, (err, status) ->
@@ -240,6 +244,88 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.equal 'Committed'
                 done()
+
+        it 'should pend ordinary queues during globallock and resume them after', (done) ->
+            d = new Date()
+            doc1 = now: d; doc2 = now: d; doc3 = now: d
+            gt1 = committed.transaction 'GlobalLock', 'user', [
+                {name: 'db.insert', arguments: ['globalLockTest', doc1]}
+            ]
+            gt2 = committed.transaction 'GlobalLock', 'user', [
+                {name: 'db.insert', arguments: ['globalLockTest', doc2]}
+            ]
+            gt3 = committed.transaction 'GlobalLock', 'user', [
+                {name: 'db.insert', arguments: ['globalLockTest', doc3]}
+            ]
+            pendingTestMethod = (db, transaction, state, args, instructionDone) ->
+                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+                    if err? then return instructionDone(err)
+                    collection.find({now: d}).toArray (err, docs) ->
+                        #these ensure that the insert has already happened,
+                        #and hence that our global transaction has correctly
+                        #waited
+                        docs.length.should.equal 3
+                        instructionDone(null, true)
+            committed.register 'pendingTestMethod', pendingTestMethod
+            committed.register 'pendingTestMethodRollback', committed.db.pass
+            ot = committed.transaction 'Q', 'user', [
+                {name: 'pendingTestMethod'} 
+            ]
+
+            committed.withGlobalLock gt1, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.withGlobalLock gt2, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.withGlobalLock gt3, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.enqueue ot, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                done()
+
+        it 'should pend immediately transactions during globallock and resume after', (done) ->
+            d = new Date()
+            doc1 = now: d; doc2 = now: d; doc3 = now: d
+            gt1 = committed.transaction 'GlobalLock', 'user', [
+                {name: 'db.insert', arguments: ['globalLockTest', doc1]}
+            ]
+            gt2 = committed.transaction 'GlobalLock', 'user', [
+                {name: 'db.insert', arguments: ['globalLockTest', doc2]}
+            ]
+            gt3 = committed.transaction 'GlobalLock', 'user', [
+                {name: 'db.insert', arguments: ['globalLockTest', doc3]}
+            ]
+            pendingImmediateTestMethod = (db, transaction, state, args, instructionDone) ->
+                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+                    if err? then return instructionDone(err)
+                    collection.find({now: d}).toArray (err, docs) ->
+                        #these ensure that the insert has already happened,
+                        #and hence that our global transaction has correctly
+                        #waited
+                        docs.length.should.equal 3
+                        instructionDone(null, true)
+            committed.register 'pendingImmediateTestMethod', pendingImmediateTestMethod
+            committed.register 'pendingImmediateTestMethodRollback', committed.db.pass
+            im = committed.transaction null, 'user', [
+                {name: 'pendingTestMethod'} 
+            ]
+
+            committed.withGlobalLock gt1, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.withGlobalLock gt2, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.withGlobalLock gt3, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.immediately im, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                done()            
 
     describe 'stop', ->
 
@@ -721,24 +807,203 @@ describe 'Committed', ->
                                 otherContent: "other"
                             done()
 
+    describe 'chained transactions', ->
+
+        beforeEach (done) ->
+            committed.start _db, 'testSoftwareVersion', (err) ->
+                should.not.exist err
+                _db.createCollection 'chainedTest', (err, collection) -> 
+                    collection.remove {}, {w:1}, done
+
+        afterEach (done) ->
+            committed.stop done
+
+        it 'should execute all the instructions in each transaction in the chain', (done) ->
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q3', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+            )
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                _db.collection 'chainedTest', {strict:true}, (err, collection) ->
+                    should.not.exist err
+                    collection.find({execute: 'all'}).toArray (err, docs) ->
+                        docs.length.should.equal 6
+                        done()
+
+
+        it 'should execute their transactions in sequence, and within the sequence of other queues', (done) ->
+            chainQueueCheck = (db, transaction, state, [what], done) ->
+                _db.collection 'chainedTest', (err, collection) ->
+                    should.exist what
+                    collection.find({where: what}).toArray (err, docs) ->
+                        docs.length.should.equal 1
+                        done(null, true)
+            committed.register 'chainQueueCheck', chainQueueCheck
+            committed.register 'chainQueueCheckRollback', committed.db.pass
+
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'chainQueueCheck', arguments: ['q1']}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'chainQueueCheck', arguments: ['q2']}
+                    ]
+                , 
+                    committed.transaction 'q3', 'user', [
+                        {name: 'chainQueueCheck', arguments: ['q3']}
+                    ]
+                ]
+            )
+            q1 = committed.transaction 'q1', 'user', [
+                {name: "blockingMethod"}
+                {name: 'db.insert', arguments: ['chainedTest', {where:'q1'}]}
+            ]
+            q2 = committed.transaction 'q2', 'user', [
+                {name: "blockingMethod"}
+                {name: 'db.insert', arguments: ['chainedTest', {where:'q2'}]}
+            ]
+            q3 = committed.transaction 'q3', 'user', [
+                {name: "blockingMethod"}
+                {name: 'db.insert', arguments: ['chainedTest', {where:'q3'}]}
+            ]
+            committed.enqueue q1, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.enqueue q2, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.enqueue q3, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                done()
+
+        it 'should return Failed if the first transaction in the chain fails, and roll it back', (done) ->
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'failMethod'}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q3', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+            )
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Failed'
+                _db.collection 'chainedTest', (err, collection) ->
+                    collection.find({execute: 'all'}).toArray (err, docs) ->
+                        docs.length.should.equal 0
+                        done()
+
+
+        it 'should return ChainFailed if a non-first transaction fails, and rollback only that failed transaction', (done) ->
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'failMethod'}
+                    ]
+                , 
+                    committed.transaction 'q3', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+            )
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'ChainFailed'
+                _db.collection 'chainedTest', (err, collection) ->
+                    collection.find({execute: 'all'}).toArray (err, docs) ->
+                        docs.length.should.equal 2
+                        done()
+
+
+        it 'should finish executing a chain before allowing exports.stop to callback', (done) ->
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q3', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+            )
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+            committed.stop (err) ->
+                should.not.exist err
+                _db.collection 'chainedTest', (err, collection) ->
+                    collection.find({execute: 'all'}).toArray (err, docs) ->
+                        docs.length.should.equal 6
+                        #annoying afterEach does a stop, so start again
+                        committed.start _db, 'testSoftwareVersion', (err) ->
+                            should.not.exist err
+                            done()
+
+    describe 'restart', ->
+
+        it 'should rollback any transaction left at Processing status'
+
+        it 'should execute any transactions left at Queued status'
 
 ###
 
 
-revision updateOneOp and insert
+revision updateOneOp and insert; pass revision structure at start. increment all if none specified.
 
 test for restartability of instructions, esp for rollback.
 
----
+noDb flag?
 
-transaction chains for cross-queue
+make instructions into a class structure so that saving instructions state et al are easy for instruction authors to access
 
-no need for new api, simply enqueue the parent transaction committed.chain [transactions] startup is interesting. it then feeds other queues and takes the callback. 
-
-transaction has transactionsBefore, transactionsAfter; when we're done, if we have transactions with a transactionAfter, after we've Committed, 
-we modify out structure  so that we become the transactionBefore for our child, we save and then push our transactionAfter child into the right queue.
-
-we make sure that the db transaction never reaches status 'Committed' until transactionAfter is empty.
-
-
+global lock needs to increment the revison of every document in the system. pass revison info in at start, make insert / update aware of revision info.
+this is a potentially slow update.
 ###
+

@@ -14,6 +14,7 @@ _softwareVersion = null
 _queueCountersCollection = null
 _transactionsCollection = null
 _pkFactory = null
+_config = {}
 
 class DefaultPkFactory
     createPk: () ->
@@ -37,17 +38,24 @@ _inSeries = (cursor, fn, done) ->
             done(err)
         )
 
-#optional params for start are [softwareVersion, pkFactory]
-#PkFactories work the same as those in node-mongodb-native, this is necessary
-#for the insert instruction, which assumes presence of _id before giving the
-#document over to the mongo driver
+#config must contain {db} this is a db connection which will be used for the
+#queueCounters and transactions collections. config may also contain
+# {softwareVersion, pkFactory}. PkFactories work the same as those in node-
+#mongodb-native, this is necessary for the insert instruction, which assumes
+#presence of _id before giving the document over to the mongo driver. config
+#will be passed to every instruction that gets executed so put whatever you
+#want in there
 
-exports.start = (db, optionals..., done) ->
+exports.start = (config, done) ->
+    if not config?.db? 
+        return done( new Error("committed must be supplied with at least a config.db during start"))
     if _state isnt 'stopped'
         return done( new Error("committed has already been started") )
-    _softwareVersion = optionals[0]
-    _pkFactory = if optionals[1]? then new optionals[1]() else new DefaultPkFactory()
-    _db = db
+    _softwareVersion = config.softwareVersion
+    #supply an object that can be used as a factory, or we instantiate our own class for this
+    _pkFactory = if config.pkFactory? then config.pkFactory else new DefaultPkFactory()
+    _db = config.db
+    _config = config
     #reset this state too during start
     _queueLength = {}
     _immediateCounter = 0
@@ -378,7 +386,7 @@ execute = (instructions, state, transaction, done) ->
         #assemble the arguments for the call of one of our registered functions
         args = if instruction.arguments? then instruction.arguments else []
         if not Array.isArray(args) then args = [args]
-        fnArgs = [_db, transaction, state, args]
+        fnArgs = [_config, transaction, state, args]
         #add the callback
         fnArgs.push (err, iteratorResult) ->
             #if an instruction has 'failed' by returning false, interrupt the series execution by returning an error
@@ -698,14 +706,14 @@ _revisionedUpdateChecks = (revisionName, newPartialDocument, oldPartialDocument)
 #as they'll be cloned after commit in the event of implicit rollback
 #instructions must return done(err, result) where result is true for success and false for failure
 exports.db =
-    pass: (db, transaction, state, args, done) ->
+    pass: (config, transaction, state, args, done) ->
         done(null, true)
 
-    insert: (db, transaction, state, [collectionName, documents, etc...], done) ->
+    insert: (config, transaction, state, [collectionName, documents, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to insert"))
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insert command"))
 
-        db.collection collectionName, {strict: true}, (err, collection) ->
+        config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             if not Array.isArray(documents) then documents = [documents]
             #inserts should _id every document, otherwise accurate rollback won't be possible, moreover these ids need to be saved somewhere
@@ -726,11 +734,11 @@ exports.db =
                     if err? then return done(err, null)
                     return done(null, true)
 
-    insertRollback: (db, transaction, state, [collectionName, documents, etc...], done) ->
+    insertRollback: (config, transaction, state, [collectionName, documents, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to insertRollback"))
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insertRollback command"))
 
-        db.collection collectionName, {strict: true}, (err, collection) ->
+        config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             options =
                 w:1
@@ -753,29 +761,29 @@ exports.db =
                 return async.each documents, iterator, (err) ->
                     return done(err, true) #rollbacks only fail if there's an error
 
-    updateOneOp: (db, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
+    updateOneOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
         if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
 
-        db.collection collectionName, {strict: true}, (err, collection) ->
+        config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             collection.update _mongolize(selector), _mongolize(updateOps), _updateOneOptions, (err, updated) ->
                 if err? then return done(err, null)
                 if updated isnt 1 then return done(null, false) #the instruction has failed
                 return done(null, true)
 
-    updateOneOpRollback: (db, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
+    updateOneOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
         if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
         #Rollback for an updateOneOp is almost an update using the rollbackOps, except that it always results in true
-        return exports.db.updateOneOp db, transaction, state, [collectionName, selector, rollbackOps, {}], (err, result) ->
+        return exports.db.updateOneOp config, transaction, state, [collectionName, selector, rollbackOps, {}], (err, result) ->
             done(err, true)
 
-    revisionedUpdate: (db, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+    revisionedUpdate: (config, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdate"))
         if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdate command"))
 
-        db.collection collectionName, {strict: true}, (err, collection) ->
+        config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
             if fail? then return done(fail)
@@ -798,11 +806,11 @@ exports.db =
                 if updated isnt 1 then return done(null, false) #the instruction has failed
                 return done(null, true)
 
-    revisionedUpdateRollback: (db, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+    revisionedUpdateRollback: (config, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdateRollback"))
         if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdateRollback command"))
 
-        db.collection collectionName, {strict: true}, (err, collection) ->
+        config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
             fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
             if fail? then return done(fail)

@@ -15,17 +15,17 @@ dbconfig =
 
 before (done) ->
     committed.register 'db', committed.db
-    failMethod = (db, transaction, state, args, done) ->
+    failMethod = (config, transaction, state, args, done) ->
         done(null, false)
     committed.register 'failMethod', failMethod
     committed.register 'failMethodRollback', committed.db.pass
 
-    errorMethod = (db, transaction, state, args, done) ->
+    errorMethod = (config, transaction, state, args, done) ->
         done 'Supposed to fail', false
     committed.register 'errorMethod', errorMethod
     committed.register 'errorMethodRollback', committed.db.pass
 
-    blockingMethod = (db, transaction, state, args, done) ->
+    blockingMethod = (config, transaction, state, args, done) ->
         setTimeout (()-> done(null, true)), 1000
     committed.register 'blockingMethod', blockingMethod
     committed.register 'blockingMethodRollback', committed.db.pass
@@ -44,11 +44,11 @@ describe 'Committed', ->
     describe 'start', ->
 
         it 'should start without error', (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 done err
 
         it 'should not start a second time', (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 err.message.should.have.string 'committed has already been started'
                 done()
 
@@ -79,7 +79,7 @@ describe 'Committed', ->
     describe 'valid operation', ->
 
         before (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 should.not.exist err
                 _db.createCollection 'validOpsTest', done
 
@@ -140,7 +140,7 @@ describe 'Committed', ->
     describe 'global lock', ->
 
         before (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 should.not.exist err
                 _db.createCollection 'globalLockTest', done
 
@@ -189,8 +189,8 @@ describe 'Committed', ->
                 {name: 'blockingMethod'}
                 {name: 'db.insert', arguments: ['globalLockTest', doc3]}
             ]
-            globalLockTestMethod = (db, transaction, state, args, instructionDone) ->
-                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+            globalLockTestMethod = (config, transaction, state, args, instructionDone) ->
+                config.db.collection 'globalLockTest', {strict:true}, (err, collection) ->
                     if err? then return instructionDone(err)
                     collection.find({now: d}).toArray (err, docs) ->
                         #these ensure that the insert has already happened,
@@ -224,8 +224,8 @@ describe 'Committed', ->
                 {name: 'blockingMethod'}
                 {name: 'db.insert', arguments: ['globalLockTest', doc]}
             ]
-            globalImmediateTestMethod = (db, transaction, state, args, instructionDone) ->
-                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+            globalImmediateTestMethod = (config, transaction, state, args, instructionDone) ->
+                config.db.collection 'globalLockTest', {strict:true}, (err, collection) ->
                     if err? then return instructionDone(err)
                     collection.find(doc).toArray (err, docs) ->
                         #these ensure that the insert has already happened,
@@ -257,8 +257,8 @@ describe 'Committed', ->
             gt3 = committed.transaction 'GlobalLock', 'user', [
                 {name: 'db.insert', arguments: ['globalLockTest', doc3]}
             ]
-            pendingTestMethod = (db, transaction, state, args, instructionDone) ->
-                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+            pendingTestMethod = (config, transaction, state, args, instructionDone) ->
+                config.db.collection 'globalLockTest', {strict:true}, (err, collection) ->
                     if err? then return instructionDone(err)
                     collection.find({now: d}).toArray (err, docs) ->
                         #these ensure that the insert has already happened,
@@ -298,8 +298,8 @@ describe 'Committed', ->
             gt3 = committed.transaction 'GlobalLock', 'user', [
                 {name: 'db.insert', arguments: ['globalLockTest', doc3]}
             ]
-            pendingImmediateTestMethod = (db, transaction, state, args, instructionDone) ->
-                db.collection 'globalLockTest', {strict:true}, (err, collection) ->
+            pendingImmediateTestMethod = (config, transaction, state, args, instructionDone) ->
+                config.db.collection 'globalLockTest', {strict:true}, (err, collection) ->
                     if err? then return instructionDone(err)
                     collection.find({now: d}).toArray (err, docs) ->
                         #these ensure that the insert has already happened,
@@ -330,7 +330,7 @@ describe 'Committed', ->
     describe 'stop', ->
 
         beforeEach (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 should.not.exist err
                 _db.createCollection 'stopTest', (err, collection) -> 
                     if err? then return done(err)
@@ -367,17 +367,17 @@ describe 'Committed', ->
     describe 'rollback', ->
 
         before (done) ->
-            failSlowlyMethod = (db, transaction, state, args, done) ->
+            failSlowlyMethod = (config, transaction, state, args, done) ->
                 setTimeout (() -> done(null, false)), 1000
             committed.register 'failSlowlyMethod', failSlowlyMethod
             
-            failSlowlyMethodRollback = (db, transaction, state, args, done) ->
+            failSlowlyMethodRollback = (config, transaction, state, args, done) ->
                 setTimeout (() -> done(null, true)), 1000
             committed.register 'failSlowlyMethodRollback', failSlowlyMethodRollback
             done()
 
         beforeEach (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 should.not.exist err
                 _db.createCollection 'rollbackTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
@@ -484,7 +484,7 @@ describe 'Committed', ->
     describe 'error handling', ->
 
         before (done) ->
-            committed.start _db, 'testSoftwareVersion', done
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, done
 
         after (done) ->
             committed.stop done
@@ -556,13 +556,13 @@ describe 'Committed', ->
 
                 async.parallel tests, (err) ->
                     if err? then return done(err)
-                    committed.start _db, 'testSoftwareVersion', done
+                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, done
 
 
     describe 'instructions', ->
 
         beforeEach (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 should.not.exist err
                 _db.createCollection 'instructionsTest', (err, collection) -> 
                     collection.remove {}, {w:1}, done
@@ -810,7 +810,7 @@ describe 'Committed', ->
     describe 'chained transactions', ->
 
         beforeEach (done) ->
-            committed.start _db, 'testSoftwareVersion', (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                 should.not.exist err
                 _db.createCollection 'chainedTest', (err, collection) -> 
                     collection.remove {}, {w:1}, done
@@ -848,7 +848,7 @@ describe 'Committed', ->
 
 
         it 'should execute their transactions in sequence, and within the sequence of other queues', (done) ->
-            chainQueueCheck = (db, transaction, state, [what], done) ->
+            chainQueueCheck = (config, transaction, state, [what], done) ->
                 _db.collection 'chainedTest', (err, collection) ->
                     should.exist what
                     collection.find({where: what}).toArray (err, docs) ->
@@ -982,7 +982,7 @@ describe 'Committed', ->
                     collection.find({execute: 'all'}).toArray (err, docs) ->
                         docs.length.should.equal 6
                         #annoying afterEach does a stop, so start again
-                        committed.start _db, 'testSoftwareVersion', (err) ->
+                        committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                             should.not.exist err
                             done()
 
@@ -1032,7 +1032,7 @@ describe 'Committed', ->
                             itemDone()
                 , (err) ->
                     should.not.exist err
-                    committed.start _db, 'testSoftwareVersion', (err) ->
+                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
@@ -1093,7 +1093,7 @@ describe 'Committed', ->
                             itemDone()
                 , (err) ->
                     should.not.exist err
-                    committed.start _db, 'testSoftwareVersion', (err) ->
+                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
@@ -1124,7 +1124,7 @@ describe 'Committed', ->
             _db.collection 'transactions', {strict:true}, (err, collection) ->
                 collection.insert bigT, {w:1, journal: true}, (err, objects) ->
                     should.not.exist err
-                    committed.start _db, 'testSoftwareVersion', (err) ->
+                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err

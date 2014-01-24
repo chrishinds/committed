@@ -24,6 +24,8 @@ _inSeries = (cursor, fn, done) ->
     return async.doUntil(
         (itemDone) ->
             cursor.nextObject (err, item) ->
+                if err? 
+                    return itemDone(err)
                 if not item?
                     finished = true
                     return itemDone()
@@ -52,19 +54,40 @@ exports.start = (db, optionals..., done) ->
     _pending = []
     _pendingImmediate = []
 
+    #re-create the _queue object, initially this should just contain the
+    #GlobalLock queue, others will be created as needed. 
+    _queues =
+        #globallock has a special worker function
+        GlobalLock: async.queue(commitWithGlobalLock, 1)
+    _queueLength.GlobalLock = 0
+    #it also has a special drain
+    _queues.GlobalLock.drain = () ->
+        #if our global lock queue is now empty, make sure to restart the other queues
+        _state = 'started'
+        #insert pending transaction into their queues
+        while _pending.length isnt 0
+            [transaction, done] = _pending.shift()
+            _enqueueOrCreateAndEnqueue(transaction.queue, transaction, done)
+        #execute any pending immediates in parallel
+        while _pendingImmediate.length isnt 0
+            [transaction, done] = _pendingImmediate.shift()
+            _executeImmediate(transaction, done)
+
     tasks = []
 
     tasks.push (done) ->
         #create the transactionsCollection
         _db.createCollection 'transactions', {w:1, journal: true}, (err, collection) ->
-            if err?
-                return done(err, null)
+            if err? then return done(err, null)
             _transactionsCollection = collection
-            _db.ensureIndex 'transactions', {status:1}, {w:1, journal: true}, done
+            _db.ensureIndex 'transactions', {status:1}, {w:1, journal: true}, (err) ->
+                if err? then return done(err, null)
+                _db.ensureIndex 'transactions', {'after.0.status':1}, {w:1, journal: true}, (err) ->
+                    return done(err, null)
 
 
     tasks.push (done) ->
-        #create the transactionsCollection
+        #create the queueCounters collection
         _db.createCollection 'queueCounters', {w:1, journal: true}, (err, collection) ->
             if err?
                 return done(err, null)
@@ -82,9 +105,9 @@ exports.start = (db, optionals..., done) ->
         #Any transactions resulting from a committed.immediately will have a
         #position of -1 so will be attempted first. Execution is stricly sequential.
         _inSeries( 
-            _transactionsCollection.find({status: 'Processing'}, {snapshot: true, sort: position: 1})
+            _transactionsCollection.find({status: 'Processing'}, {sort: position: 1})
             , (transaction, transactionDone) ->
-                rollback transaction (err, result) ->
+                rollback transaction, (err, result) ->
                     #eat the errors to ensure we continue to progress through the collection
                     if err? then console.error err.name, err.message, err.stack
                     return transactionDone()
@@ -114,11 +137,11 @@ exports.start = (db, optionals..., done) ->
         #this. again, committed.immediately transactions with position = -1
         #will be done first
         _inSeries(
-            _transactionsCollection.find({$or: [{status: 'Queued'}, {status:'Committed', "after.0.status":'Queued'}]}, {snapshot: true, sort: position: 1})
+            _transactionsCollection.find({status: 'Queued'}, {sort: position: 1})
             , (transaction, transactionDone) ->
                 commit transaction, (err, result) ->
                     #eat any error so we continue
-                    if err? then console.error err.name, err.message, err.stack
+                    if err? then console.error err.name, err.message, err.stack, JSON.stringify(transaction, null, 2)
                     transactionDone()
             , done
             )
@@ -126,25 +149,6 @@ exports.start = (db, optionals..., done) ->
     #run the start-up tasks
     async.series tasks, (err, results) ->
         if err? then return done(err)
-        #re-create the _queue object, initially this should just contain the
-        #GlobalLock queue, others will be created as needed. 
-        _queues =
-            #globallock has a special worker function
-            GlobalLock: async.queue(commitWithGlobalLock, 1)
-        _queueLength.GlobalLock = 0
-        #it also has a special drain
-        _queues.GlobalLock.drain = () ->
-            #if our global lock queue is now empty, make sure to restart the other queues
-            _state = 'started'
-            #insert pending transaction into their queues
-            while _pending.length isnt 0
-                [transaction, done] = _pending.shift()
-                _enqueueOrCreateAndEnqueue(transaction.queue, transaction, done)
-            #execute any pending immediates in parallel
-            while _pendingImmediate.length isnt 0
-                [transaction, done] = _pendingImmediate.shift()
-                _executeImmediate(transaction, done)
-
         #now start the queues for the first time
         _state = 'started'
         return done(null)
@@ -638,14 +642,15 @@ _commitCore = (transaction, done) ->
         transaction.status = 'Processing'
         transaction.startedAt = new Date()
         _setUpTransaction(transaction)
-        #save the transaction so that if we crash we'll have a record of it in
-        #the db. note that in the case of a chain the id is going to be in the
-        #db already, in which case we need to upsert to reflect structural
-        #changes from _shiftChain()
+        # Need to save the transaction in case of crash, this has to be an
+        # upsert because the transaction may or may not already be there. New
+        # transactions need a fresh id. During a chain or a restart, the id
+        # will already be present, but a save is still necessary to reflect
+        # status change, and/or _shiftChain
         if not transaction._id?
+            #collision seems unlikely (https://github.com/mongodb/js-bson/blob/master/lib/bson/objectid.js#L106)
             transaction._id = _pkFactory.createPk()
-        #minimise collision possibility by ensuring that if we're matching an existing _id we're also matching one which has an unfinished chain
-        return _transactionsCollection.update {_id: transaction._id, 'after.0.status':'Queued'}, transaction, {upsert:true, w:1}, (err, changed) ->
+        return _transactionsCollection.update {_id: transaction._id}, transaction, {upsert:true, w:1}, (err, changed) ->
             if not err? and changed isnt 1 then err = new Error("upsert transaction must effect exactly one document")
             if err? then return done(err, null)
             #transaction has been written to the db, we're ready to execute instructions
@@ -830,7 +835,6 @@ exports.transaction = (queueName, username, instructions, rollback) ->
         lastUpdatedAt: null
         enqueuedBy: username
         status: "Queued"
-        data: {}
         instructions: if instructions? then instructions else []
         rollback: rollback
         execution:

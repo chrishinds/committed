@@ -47,6 +47,9 @@
     finished = false;
     return async.doUntil(function(itemDone) {
       return cursor.nextObject(function(err, item) {
+        if (err != null) {
+          return itemDone(err);
+        }
         if (item == null) {
           finished = true;
           return itemDone();
@@ -74,6 +77,24 @@
     _immediateCounter = 0;
     _pending = [];
     _pendingImmediate = [];
+    _queues = {
+      GlobalLock: async.queue(commitWithGlobalLock, 1)
+    };
+    _queueLength.GlobalLock = 0;
+    _queues.GlobalLock.drain = function() {
+      var transaction, _ref, _ref1, _results;
+      _state = 'started';
+      while (_pending.length !== 0) {
+        _ref = _pending.shift(), transaction = _ref[0], done = _ref[1];
+        _enqueueOrCreateAndEnqueue(transaction.queue, transaction, done);
+      }
+      _results = [];
+      while (_pendingImmediate.length !== 0) {
+        _ref1 = _pendingImmediate.shift(), transaction = _ref1[0], done = _ref1[1];
+        _results.push(_executeImmediate(transaction, done));
+      }
+      return _results;
+    };
     tasks = [];
     tasks.push(function(done) {
       return _db.createCollection('transactions', {
@@ -89,7 +110,19 @@
         }, {
           w: 1,
           journal: true
-        }, done);
+        }, function(err) {
+          if (err != null) {
+            return done(err, null);
+          }
+          return _db.ensureIndex('transactions', {
+            'after.0.status': 1
+          }, {
+            w: 1,
+            journal: true
+          }, function(err) {
+            return done(err, null);
+          });
+        });
       });
     });
     tasks.push(function(done) {
@@ -113,17 +146,16 @@
       return _inSeries(_transactionsCollection.find({
         status: 'Processing'
       }, {
-        snapshot: true,
         sort: {
           position: 1
         }
       }), function(transaction, transactionDone) {
-        return rollback(transaction(function(err, result) {
+        return rollback(transaction, function(err, result) {
           if (err != null) {
             console.error(err.name, err.message, err.stack);
           }
           return transactionDone();
-        }));
+        });
       }, done);
     });
     tasks.push(function(done) {
@@ -147,23 +179,15 @@
     });
     tasks.push(function(done) {
       return _inSeries(_transactionsCollection.find({
-        $or: [
-          {
-            status: 'Queued'
-          }, {
-            status: 'Committed',
-            "after.0.status": 'Queued'
-          }
-        ]
+        status: 'Queued'
       }, {
-        snapshot: true,
         sort: {
           position: 1
         }
       }), function(transaction, transactionDone) {
         return commit(transaction, function(err, result) {
           if (err != null) {
-            console.error(err.name, err.message, err.stack);
+            console.error(err.name, err.message, err.stack, JSON.stringify(transaction, null, 2));
           }
           return transactionDone();
         });
@@ -173,24 +197,6 @@
       if (err != null) {
         return done(err);
       }
-      _queues = {
-        GlobalLock: async.queue(commitWithGlobalLock, 1)
-      };
-      _queueLength.GlobalLock = 0;
-      _queues.GlobalLock.drain = function() {
-        var transaction, _ref, _ref1, _results;
-        _state = 'started';
-        while (_pending.length !== 0) {
-          _ref = _pending.shift(), transaction = _ref[0], done = _ref[1];
-          _enqueueOrCreateAndEnqueue(transaction.queue, transaction, done);
-        }
-        _results = [];
-        while (_pendingImmediate.length !== 0) {
-          _ref1 = _pendingImmediate.shift(), transaction = _ref1[0], done = _ref1[1];
-          _results.push(_executeImmediate(transaction, done));
-        }
-        return _results;
-      };
       _state = 'started';
       return done(null);
     });
@@ -859,8 +865,7 @@
         transaction._id = _pkFactory.createPk();
       }
       return _transactionsCollection.update({
-        _id: transaction._id,
-        'after.0.status': 'Queued'
+        _id: transaction._id
       }, transaction, {
         upsert: true,
         w: 1
@@ -1169,7 +1174,6 @@
       lastUpdatedAt: null,
       enqueuedBy: username,
       status: "Queued",
-      data: {},
       instructions: instructions != null ? instructions : [],
       rollback: rollback,
       execution: {

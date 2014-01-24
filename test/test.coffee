@@ -1,7 +1,7 @@
 async = require 'async'
 chai = require 'chai'
 mongodb = require 'mongodb'
-uuid = require 'node-uuid'
+ObjectID = require('mongodb').ObjectID
 
 should = chai.should()
 
@@ -987,23 +987,165 @@ describe 'Committed', ->
                             done()
 
     describe 'restart', ->
+        
+        beforeEach (done) ->
+            _db.createCollection 'transactions', (err, collection) ->
+                collection.remove {}, {w:1}, (err) ->
+                    _db.createCollection 'restartTest', (err, collection) -> 
+                        collection.remove {}, {w:1}, done
 
-        it 'should rollback any transaction left at Processing status'
+        afterEach (done) ->
+            committed.stop done
 
-        it 'should execute any transactions left at Queued status'
+        it 'should execute any transactions left at Queued status', (done) ->
+            tinyT = committed.transaction null, 'user', [
+                {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+            ]
+            littleT = committed.transaction 'q1', 'user', [
+                {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+            ]
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                    ]
+                ]
+            )
+            #set positions, the first is an immediate 
+            tinyT.position = -1
+            littleT.position = 1
+            bigT.position = 2
+            #insert each directly into the db.
+            async.each(
+                [tinyT, littleT, bigT]
+                , (item, itemDone) ->
+                    _db.collection 'transactions', {strict:true}, (err, collection) ->
+                        collection.insert item, {w:1, journal: true}, (err, objects) ->
+                            should.not.exist err
+                            itemDone()
+                , (err) ->
+                    should.not.exist err
+                    committed.start _db, 'testSoftwareVersion', (err) ->
+                        should.not.exist err
+                        _db.collection 'restartTest', {strict:true}, (err, collection) ->
+                            should.not.exist err
+                            collection.find({content:'here'}).toArray (err, docs) ->
+                                docs.length.should.equal 7
+                                done()
+                )
 
+
+        it 'should rollback any transaction left at Processing status', (done) ->
+            #have to manually construct the rollback instructions because
+            #_setUpTransaction isn't going to get called
+            littleT = committed.transaction 'q1', 'user', [
+                {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                {name: 'failMethod'}
+            ], [
+                {name: 'db.insertRollback', arguments: ['restartTest', {content:'here'}]}
+                {name: 'db.pass'}
+            ]
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'failMethod'}
+                    ], [
+                        {name: 'db.insertRollback', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'db.pass'}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                    ], [
+                        {name: 'db.insertRollback', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'db.pass'}
+                    ]
+                ]
+            )
+            #set positions, the first is an immediate 
+            littleT.position = 1
+            bigT.position = 2
+            doc1 = {_id: ObjectID(), content:'here'}
+            doc2 = {_id: ObjectID(), content:'here'}
+            #fake the state of this transaction to make it look like its half way through execution
+            littleT.execution.state = [{ids:[doc1._id]}, {}]
+            littleT.execution.result = [true, false]
+            littleT.status = 'Processing'
+            bigT.execution.state = [{ids:[doc2._id]}, {}]
+            bigT.execution.result = [true, false]
+            bigT.status = 'Processing'
+            async.each(
+                #put transactions and documents into the db
+                [['transactions', [littleT, bigT]], ['restartTest', [doc1, doc2]]]
+                , ([where, what], itemDone) ->
+                    _db.collection where, {strict:true}, (err, collection) ->
+                        collection.insert what, {w:1, journal: true}, (err, objects) ->
+                            should.not.exist err
+                            itemDone()
+                , (err) ->
+                    should.not.exist err
+                    committed.start _db, 'testSoftwareVersion', (err) ->
+                        should.not.exist err
+                        _db.collection 'restartTest', {strict:true}, (err, collection) ->
+                            should.not.exist err
+                            collection.find({content:'here'}).toArray (err, docs) ->
+                                docs.length.should.equal 0
+                                done()
+                )
+
+
+        it 'should restart execution of a stalled chain', (done) ->
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                        {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
+                    ]
+                ]
+            )
+            #make the chain look like the first transaction has executed
+            bigT.status = 'Committed'
+            bigT.position = 1
+            #insert it into the db and see if the second transaction in the chain is executed on startup.
+            _db.collection 'transactions', {strict:true}, (err, collection) ->
+                collection.insert bigT, {w:1, journal: true}, (err, objects) ->
+                    should.not.exist err
+                    committed.start _db, 'testSoftwareVersion', (err) ->
+                        should.not.exist err
+                        _db.collection 'restartTest', {strict:true}, (err, collection) ->
+                            should.not.exist err
+                            collection.find({content:'here'}).toArray (err, docs) ->
+                                docs.length.should.equal 2
+                                done()
 ###
 
 
 revision updateOneOp and insert; pass revision structure at start. increment all if none specified.
 
-test for restartability of instructions, esp for rollback.
-
 noDb flag?
 
 make instructions into a class structure so that saving instructions state et al are easy for instruction authors to access
 
-global lock needs to increment the revison of every document in the system. pass revison info in at start, make insert / update aware of revision info.
-this is a potentially slow update.
+global lock needs to increment the revison of every document in the system.
+pass revison info in at start, make insert / update aware of revision info.
+this is a potentially slow update. need some kind of protection, but maybe not
+this, eg if there was a models revision, this could be incremented to achieve
+the same? 
+
 ###
 
+    

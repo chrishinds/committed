@@ -672,7 +672,7 @@ describe 'Committed', ->
                                 docsInDB.length.should.equal 0
                                 done()
 
-        it 'revisionedUpdate should update a document with a correct revision', (done) ->
+        it 'updateOneDoc should update a document with a correct revision', (done) ->
             masterDoc =
                 revision: 
                     contentRevision: 1
@@ -695,7 +695,7 @@ describe 'Committed', ->
                 oldDoc._id = newDoc._id = masterDoc._id
                 update = committed.transaction "test", 'user'
                 update.instructions.push
-                    name: 'db.revisionedUpdate'
+                    name: 'db.updateOneDoc'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
@@ -713,7 +713,7 @@ describe 'Committed', ->
                                 otherContent: "other"
                             done()
 
-        it 'revisionedUpdateRollback should undo a revisionedUpdate', (done) ->
+        it 'updateOneDocRollback should undo a updateOneDoc', (done) ->
             masterDoc =
                 revision: 
                     contentRevision: 1
@@ -736,13 +736,13 @@ describe 'Committed', ->
                 oldDoc._id = newDoc._id = masterDoc._id
                 update = committed.transaction "test"
                 update.instructions.push
-                    name: 'db.revisionedUpdate'
+                    name: 'db.updateOneDoc'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
                     rollback = committed.transaction "test", 'user', [
-                        {name: 'db.revisionedUpdateRollback', arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]}
+                        {name: 'db.updateOneDocRollback', arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]}
                     ], [
                         {name: 'db.pass'}
                     ]
@@ -762,7 +762,7 @@ describe 'Committed', ->
                                     otherContent: "other"
                                 done()            
 
-        it 'revisionedUpdate should not update a document whose revision has changed', (done) ->
+        it 'updateOneDoc should not update a document whose revision has changed', (done) ->
             masterDoc =
                 revision: 
                     contentRevision: 2
@@ -786,10 +786,10 @@ describe 'Committed', ->
                 oldDoc._id = newDoc._id = masterDoc._id
                 update = committed.transaction "test", 'user', [], []
                 update.instructions.push
-                    name: 'db.revisionedUpdate'
+                    name: 'db.updateOneDoc'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
                 update.rollback.push
-                    name: 'db.revisionedUpdateRollback'
+                    name: 'db.updateOneDocRollback'
                     arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
@@ -1134,11 +1134,11 @@ describe 'Committed', ->
 ###
 
 
+have changed the signature of updateOneDoc: revisionName at end.
+
+
 revision updateOneOp and insert; pass revision structure at start. increment all if none specified.
 
-noDb flag?
-
-make instructions into a class structure so that saving instructions state et al are easy for instruction authors to access
 
 global lock needs to increment the revison of every document in the system.
 pass revison info in at start, make insert / update aware of revision info.

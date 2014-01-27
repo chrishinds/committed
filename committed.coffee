@@ -699,23 +699,70 @@ _revisionedUpdateChecks = (revisionName, newPartialDocument, oldPartialDocument)
         return new Error("unable to do a revisioned update, revision.#{revisionName} isn't of type number")
     return null
 
+_checkInstructionRevisionConfig = (instructionName, config, collectionName, revisions) ->
+    if revisions.length isnt 0 and (not config.revisions? or not config.revisions[collectionName]?)
+        return new Error("can't #{instructionName} documents with revisions #{revisions} when config.revisions has been supplied at committed.start for #{collectionName}")
+    for revisionName in revisions
+        if revisionName not in config.revisions[collectionName]
+            return new Error("can't #{instructionName} documents with a revision '#{revisionName}' not specified in the config.revisions given at committed.start")
+    if revisions.length is 0 and config.revisions? and config.revisions[collectionName]?
+        return new Error("can't #{instructionName} documents without an explicit revision parameter given the revision config #{config.revision[collectionName]}")
+    return null
+
+_processUpdateRevisions = (revisions) ->
+    #revisions can be null, string, array, or object
+    if not revisions? then revisions = []
+    if typeof revisions is 'string' then revisions = [revisions]
+    if Array.isArray(revisions)
+        revisionNames = revisions
+        revisionNumbers = null
+    else
+        revisionNames = ( key for key of revisions )
+        revisionNumbers = revisions
+    return [revisionNames, revisionNumbers]
+
 
 # should be possible to do committed.register('db', committed.db) to use these fns
-# we will need to review the list the operations in due course, once they've matured a bit.
 #note: values passed to instructions should generally be considered immutable,
 #as they'll be cloned after commit in the event of implicit rollback
 #instructions must return done(err, result) where result is true for success and false for failure
+
+# a revision is a counter, incremented during each update. Prior to each
+# update the id and revision number of each document that'll be changed is
+# recorded in the instruction state. Warning: for updates that effect millions
+# of documents, this will result in millions of ids in the transaction.
+
+# revisioning needs to be explicitly setup during start, as config.revision, eg
+# { collectionName1: [subSchema1, subSchema2] } would be interpreted as:
+#  - collectionName1 had two sub-schemas, so at insert collection1Doc.revision is {subSchema1: 0 subSchema2: 0}
+#  - collectionName2 is not a revisioned collection and so will not have a .revision property.
+
 exports.db =
     pass: (config, transaction, state, args, done) ->
         done(null, true)
 
-    insert: (config, transaction, state, [collectionName, documents, etc...], done) ->
+    # an insert instruction. documents can be a single document or an array
+    # thereof. revisions is optional, if present should be an array containing
+    # the subschemas which are to be established in each document's .revision
+    # subdoc. revisions may only contain subschemas mentioned in the
+    # config.revisions.collectionName object. 
+    insert: (config, transaction, state, [collectionName, documents, revisions, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to insert"))
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insert command"))
+        if not Array.isArray(documents) then documents = [documents]
+
+        if not revisions? then revisions = []
+        #check the revisions param is consistent with any config.revisions settings
+        error = _checkInstructionRevisionConfig 'insert', config, collectionName, revisions
+        if error?
+            return done(error)
+        #check the docs dont have any revision info if we're intending to automatically set revision info
+        if revisions.length > 0 and documents.some((d) -> d.revision?)
+            return done(new Error("can't insert documents with revisions #{revisions} when some of the supplied documents already have a revision property"))
+
 
         config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
-            if not Array.isArray(documents) then documents = [documents]
             #inserts should _id every document, otherwise accurate rollback won't be possible, moreover these ids need to be saved somewhere
             state.ids = []
             for d in documents
@@ -724,6 +771,11 @@ exports.db =
                 else
                     d._id = _pkFactory.createPk()
                     state.ids.push d._id
+                #while we're looking at documents, check to see if we should create some revision info
+                if revisions.length > 0 and not d.revision?
+                    d.revision = {}
+                    for revisionName in revisions
+                        d.revision[revisionName] = 0
             options =
                 w:1
                 journal: true
@@ -734,7 +786,7 @@ exports.db =
                     if err? then return done(err, null)
                     return done(null, true)
 
-    insertRollback: (config, transaction, state, [collectionName, documents, etc...], done) ->
+    insertRollback: (config, transaction, state, [collectionName, documents, revisions, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to insertRollback"))
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insertRollback command"))
 
@@ -761,27 +813,117 @@ exports.db =
                 return async.each documents, iterator, (err) ->
                     return done(err, true) #rollbacks only fail if there's an error
 
-    updateOneOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
+
+    #updateOneOp is an update operation on one document using mongo
+    #operations. revisions is optional, if  present then it needs to be either 
+    # 1. a string containing revisions names which we should increment
+    # 2. an array of such strings
+    # 3. an object whose key,value are a revision name and revision number respectively
+    # if you supply revision numbers, that saves a read+write. 
+    updateOneOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, revisions, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
         if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
+
+        [revisionNames, revisionNumbers] = _processUpdateRevisions revisions
+        #check the revisions param is consistent with any config.revisions settings
+        error = _checkInstructionRevisionConfig 'updateOneOp', config, collectionName, revisionNames
+        if error?
+            return done(error)
+        #can't proceed if we've already got an $inc updateOps that involves the revisions 
+        if updateOps.__inc? and revisionNames.some((name) -> updateOps.__inc["revision.#{name}"])
+            return done(new Error("can't updateOneOp with revisions #{revisionNames} when there are already $inc operations on the revision sub-document"))
+        #sames true of the selector if we're going to match an exact version number, this isnt really that precise a check, but it's at least a basic check
+        if revisionNumbers? and revisionNames.some((name) -> selector["revision.#{name}"])
+            return done(new Error("can't updateOneOp with revisions #{revisionNumbers} with a selector that already matches on the revision subdoc"))
 
         config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
-            collection.update _mongolize(selector), _mongolize(updateOps), _updateOneOptions, (err, updated) ->
-                if err? then return done(err, null)
-                if updated isnt 1 then return done(null, false) #the instruction has failed
-                return done(null, true)
 
-    updateOneOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, etc...], done) ->
+            #irrespective of whether we've been given required revision numbers, we need their current values written into the transaction right away
+            mongoSelector = _mongolize(selector)
+            mongoProjector = _id: 1
+            for revisionName of revisionNames
+                mongoProjector["revision.#{revisionName}"] = 1
+            #we're going to read this into memory, it's got to go back out again to the transaction collection. 
+            collection.find(mongoSelector, mongoProjector).toArray (err, docs) ->
+                if err? then return done(err, null)
+                if docs.length isnt 1 then return done(null, false) #the instruction has failed, we must find exactly one doc
+                #if we have a document to update, we should save its id and exact revision into the transaction
+                state.updated = docs[0]
+                _updateTransactionState transaction, (err) ->
+                    if err? then return done(err, null)
+                    #now we're safe for a rollback 
+
+                    executeUpdate = () ->
+                        mongoUpdateOps = _mongolize(updateOps)
+                        if revisionNames.length > 0
+                            if not mongoUpdateOps.$inc? then mongoUpdateOps.$inc = {}
+                            mongoUpdateOps.$inc["revision.#{revisionName}"] = 1 for revisionName in revisionNames
+                        collection.update mongoSelector, mongoUpdateOps, _updateOneOptions, (err, updated) ->
+                            if err? then return done(err, null)
+                            if updated isnt 1 then return done(null, false) #the instruction has failed
+                            return done(null, true)
+
+                    if revisionNumbers?
+                        #then we should check to see if what we just got meets the requirements
+                        matches = ( state.updated[revisionName] is revisionNumber for revisionName, revisionNumber of revisionNumbers )
+                        if not matches.every((x)->x)
+                            #we have failed to meet the required version number
+                            return done(null, false)
+                        else
+                            #revision requirements met, proceed with update
+                            #change the updateOps to actually make the revision increments
+                            executeUpdate()
+                    else
+                        #we can just go for the update
+                        executeUpdate()
+
+
+    updateOneOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, revisions, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
         if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
-        #Rollback for an updateOneOp is almost an update using the rollbackOps, except that it always results in true
-        return exports.db.updateOneOp config, transaction, state, [collectionName, selector, rollbackOps, {}], (err, result) ->
-            done(err, true)
 
-    revisionedUpdate: (config, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+        [revisionNames, revisionNumbers] = _processUpdateRevisions revisions
+
+        config.db.collection collectionName, {strict: true}, (err, collection) ->
+            if err? then return done(err, false)
+
+            if not state.updated?
+                #then we never got started on this transaction, so nothing to rollback
+                return done(null, true)
+            else
+                #then we wrote ids and revisions before the update, can we still find these documents?
+                revisionSelector = _id: state.updated._id
+                for revisionName, revisionNumber of state.updated.revision
+                    revisionSelector = revisionSelector["revision.#{revisionName}"] = revisionNumber
+                collection.count revisionSelector, (err, count) ->
+                    if count is 1
+                        #then we have not made an update, so there's nothing to rollback
+                        return done(null, true)
+                    else if count is 0
+                        #then we must have updated, so we must rollback. This
+                        #is true because we wrote our state.updated values
+                        #from a within-queue read.
+                        mongoRollbackOps = _mongolize(rollbackOps)
+                        if revisionNames.length > 0
+                                if not mongoUpdateOps.$inc? then mongoUpdateOps.$inc = {}
+                                mongoUpdateOps.$inc["revision.#{revisionName}"] = -1 for revisionName in revisionNames
+
+                        return collection.update _mongolize(selector), mongoRollbackOps, _updateOneOptions, (err, updated) ->
+                            if err? then return done(err, false)
+                            if updated isnt 1 then return done(null, false) #the rollback has failed
+                            return done(null, true)
+                    else
+                        #general rollback failure
+                        return done(null, false)                            
+
+
+    updateOneDoc: (config, transaction, state, [collectionName, newPartialDocument, oldPartialDocument, revisionName, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdate"))
         if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdate command"))
+
+        if not revisionName? or not config.revision?
+            return done( new Error("to use updateOneDoc config.revision info must be given during committed.start"))
 
         config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
@@ -806,7 +948,7 @@ exports.db =
                 if updated isnt 1 then return done(null, false) #the instruction has failed
                 return done(null, true)
 
-    revisionedUpdateRollback: (config, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+    updateOneDocRollback: (config, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdateRollback"))
         if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdateRollback command"))
 

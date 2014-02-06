@@ -2,6 +2,7 @@ async = require 'async'
 chai = require 'chai'
 mongodb = require 'mongodb'
 ObjectID = require('mongodb').ObjectID
+log = (x) -> console.log JSON.stringify(x, null, 2)
 
 should = chai.should()
 
@@ -79,7 +80,7 @@ describe 'Committed', ->
     describe 'valid operation', ->
 
         before (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: validOpsTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'validOpsTest', done
 
@@ -140,7 +141,7 @@ describe 'Committed', ->
     describe 'global lock', ->
 
         before (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: globalLockTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'globalLockTest', done
 
@@ -330,7 +331,7 @@ describe 'Committed', ->
     describe 'stop', ->
 
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: stopTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'stopTest', (err, collection) -> 
                     if err? then return done(err)
@@ -377,7 +378,7 @@ describe 'Committed', ->
             done()
 
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: rollbackTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'rollbackTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
@@ -562,7 +563,8 @@ describe 'Committed', ->
     describe 'instructions', ->
 
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            config = {db:_db, softwareVersion:'testSoftwareVersion', revisions: instructionsTest: ['content', 'otherContent']}
+            committed.start config, (err) ->
                 should.not.exist err
                 _db.createCollection 'instructionsTest', (err, collection) -> 
                     collection.remove {}, {w:1}, done
@@ -580,7 +582,9 @@ describe 'Committed', ->
                 status.should.be.string 'Committed'
                 should.exist(doc._id)
                 _db.collection 'instructionsTest', (err, collection) ->
+                    should.not.exist err
                     collection.findOne {_id: doc._id}, (err, docInDB) ->
+                        should.not.exist err
                         doc.t.should.equal docInDB.t
                         doc.q.should.equal docInDB.q
                         done()
@@ -594,8 +598,10 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 _db.collection 'instructionsTest', (err, collection) ->
+                    should.not.exist err
                     ids = ( doc._id for doc in docs )
                     collection.find( _id: $in: ids ).toArray (err, docsInDB) ->
+                        should.not.exist err
                         docsInDB.length.should.equal docs.length
                         done()
 
@@ -612,12 +618,14 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Failed'
                 _db.collection 'instructionsTest', (err, collection) ->
+                    should.not.exist err
                     ids = ( doc._id for doc in docs )
                     collection.find( _id: $in: ids ).toArray (err, docsInDB) ->
+                        should.not.exist err
                         docsInDB.length.should.equal 0
                         done()
 
-        it 'updateOneOp should update only one document', (done) ->
+        it 'updateOneOp should update one document, without specified revisions all are incremented', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
             transaction = committed.transaction "test", 'user', [
                 {name: 'db.insert', arguments: ['instructionsTest', docs]}
@@ -629,15 +637,18 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                     {
                         name: 'db.updateOneOp'
-                        arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                        arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gt: 2}}, {__inc: j: 1} ]
                     }
                 ]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
                     _db.collection 'instructionsTest', (err, collection) ->
-                        collection.find({j:true}).toArray (err, docsInDB) ->
+                        collection.find({j:1}).toArray (err, docsInDB) ->
+                            should.not.exist err
                             docsInDB.length.should.equal 1
+                            docsInDB[0].revision.content.should.equal 1
+                            docsInDB[0].revision.otherContent.should.equal 1
                             done()
 
         it 'updateOneOpRollback should undo an updateOneOp', (done) ->
@@ -648,55 +659,119 @@ describe 'Committed', ->
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                update = committed.transaction "test"
                 ids = ( d._id for d in docs )
-                update.instructions.push
-                    name: 'db.updateOneOp'
-                    arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
+                update = committed.transaction "test", 'user', [
+                        {
+                            name: 'db.updateOneOp'
+                            arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gt: 2}}, {__inc: j: 1} ]
+                        }, {
+                            name: 'failMethod'
+                        }
+                    ]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Failed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        should.not.exist err
+                        collection.find({_id: {$in: ids}, i: $gt:2}).toArray (err, docsInDB) ->
+                            should.not.exist err
+                            docsInDB.length.should.equal 1
+                            #rollback must return revision numbers to their initial state
+                            docsInDB[0].revision.content.should.equal 0
+                            docsInDB[0].revision.otherContent.should.equal 0
+                            #we must have removed the key we set during the update
+                            should.not.exist docsInDB[0].j
+                            done()
+
+        it 'updateOneOp should not update a document thats inconsistent with a given revision', (done) ->
+            doc = {i: 1}
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', doc]}
+            ]
+            committed.enqueue transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                update = committed.transaction "test", 'user', [
+                        {
+                            name: 'db.updateOneOp'
+                            arguments: ['instructionsTest', {_id: doc._id}, {__inc: j: 1}, {}, 'content' ]
+                        }, 
+                        {
+                            name: 'db.updateOneOp'
+                            # revision.content isn't now 0, it's been incremented by the previous instruction
+                            arguments: ['instructionsTest', {_id: doc._id}, {__inc: j: 1}, {}, {'content': 0} ]
+                        }
+                    ]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Failed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        should.not.exist err
+                        collection.findOne _id: doc._id, (err, result) ->
+                            should.not.exist err
+                            result.revision.content.should.equal 0
+                            result.revision.otherContent.should.equal 0
+                            result.i.should.equal 1
+                            should.not.exist result.j
+                            done()
+
+        it 'updateOneOp should only increment specified revisions', (done) ->
+            doc = {i: 1}
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', doc]}
+            ]
+            committed.enqueue transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                update = committed.transaction "test", 'user', [
+                        {
+                            name: 'db.updateOneOp'
+                            arguments: ['instructionsTest', {_id: doc._id}, {__set: j: 1}, {}, 'content' ]
+                        }
+                    ]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
-                    rollback = committed.transaction "test", 'user', [
-                        {
-                            name: 'db.updateOneOpRollback'
-                            arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gte: 2}}, {__set: j: true}, {__unset: j: null} ]
-                        }
-                    ], [
-                            name: 'db.pass'
-                    ]
-                    committed.enqueue rollback, (err,status) ->
+                    _db.collection 'instructionsTest', (err, collection) ->
                         should.not.exist err
-                        status.should.be.string 'Committed'
-                        _db.collection 'instructionsTest', (err, collection) ->
-                            collection.find({j:true}).toArray (err, docsInDB) ->
-                                docsInDB.length.should.equal 0
-                                done()
+                        collection.findOne _id: doc._id, (err, result) ->
+                            should.not.exist err
+                            result.revision.content.should.equal 1
+                            result.revision.otherContent.should.equal 0
+                            result.i.should.equal 1
+                            result.j.should.equal 1
+                            done()
+
+        it 'updateOneOp should use a projection for rollback when specified'
+
+        it 'updateOneOp should return errors when given a bad updateOps object'
+
+        it 'updateOneOp should deal with complex rollback projections which set and unset keys'
+
+        it 'updateOneOp should be reasonably performant'
 
         it 'updateOneDoc should update a document with a correct revision', (done) ->
-            masterDoc =
-                revision: 
-                    contentRevision: 1
-                    otherRevision: 1
+            insertDoc =
                 content: 'here'
                 otherContent: "other"
             oldDoc =
-                revision: contentRevision: 1
+                revision: content: 0
                 content: 'here'
             newDoc = 
-                revision: contentRevision: 1
+                revision: content: 100000
                 content: 'here again'
             insert = committed.transaction "test"
             insert.instructions.push
                 name: 'db.insert'
-                arguments: ['instructionsTest', masterDoc]
+                arguments: ['instructionsTest', insertDoc]
             committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                oldDoc._id = newDoc._id = masterDoc._id
+                oldDoc._id = newDoc._id = insertDoc._id
                 update = committed.transaction "test", 'user'
                 update.instructions.push
                     name: 'db.updateOneDoc'
-                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
+                    arguments: ['instructionsTest', newDoc, oldDoc]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Committed'
@@ -707,90 +782,38 @@ describe 'Committed', ->
                             delete docsInDB[0]._id
                             docsInDB[0].should.deep.equal 
                                 revision: 
-                                    contentRevision: 2
-                                    otherRevision: 1
+                                    content: 1
+                                    otherContent: 0
                                 content: 'here again'
                                 otherContent: "other"
                             done()
 
         it 'updateOneDocRollback should undo a updateOneDoc', (done) ->
-            masterDoc =
-                revision: 
-                    contentRevision: 1
-                    otherRevision: 1
+            insertDoc =
                 content: 'here'
                 otherContent: "other"
             oldDoc =
-                revision: contentRevision: 1
+                revision: content: 0
                 content: 'here'
             newDoc = 
-                revision: contentRevision: 1
+                revision: content: 0
                 content: 'here again'
             insert = committed.transaction "test"
             insert.instructions.push
                 name: 'db.insert'
-                arguments: ['instructionsTest', masterDoc]
+                arguments: ['instructionsTest', insertDoc]
             committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                oldDoc._id = newDoc._id = masterDoc._id
-                update = committed.transaction "test"
-                update.instructions.push
-                    name: 'db.updateOneDoc'
-                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
-                committed.enqueue update, (err,status) ->
-                    should.not.exist err
-                    status.should.be.string 'Committed'
-                    rollback = committed.transaction "test", 'user', [
-                        {name: 'db.updateOneDocRollback', arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]}
-                    ], [
-                        {name: 'db.pass'}
-                    ]
-                    committed.enqueue rollback, (err, status) ->
-                        should.not.exist err
-                        status.should.be.string 'Committed'
-                        _db.collection 'instructionsTest', (err, collection) ->
-                            collection.find({content:"here"}).toArray (err, docsInDB) ->
-                                docsInDB.length.should.equal 1
-                                should.exist docsInDB[0]._id
-                                delete docsInDB[0]._id
-                                docsInDB[0].should.deep.equal 
-                                    revision: 
-                                        contentRevision: 1
-                                        otherRevision: 1
-                                    content: 'here'
-                                    otherContent: "other"
-                                done()            
-
-        it 'updateOneDoc should not update a document whose revision has changed', (done) ->
-            masterDoc =
-                revision: 
-                    contentRevision: 2
-                    otherRevision: 1
-                content: 'here'
-                otherContent: "other"
-            oldDoc =
-                revision: contentRevision: 1
-                content: 'here'
-            newDoc = 
-                revision: contentRevision: 1
-                content: 'here'
-                newContent: "a key which wont reach the db"
-            insert = committed.transaction "test"
-            insert.instructions.push
-                name: 'db.insert'
-                arguments: ['instructionsTest', masterDoc]
-            committed.enqueue insert, (err, status) ->
-                should.not.exist err
-                status.should.be.string 'Committed'
-                oldDoc._id = newDoc._id = masterDoc._id
-                update = committed.transaction "test", 'user', [], []
-                update.instructions.push
-                    name: 'db.updateOneDoc'
-                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
-                update.rollback.push
-                    name: 'db.updateOneDocRollback'
-                    arguments: ['instructionsTest', 'contentRevision', newDoc, oldDoc]
+                oldDoc._id = newDoc._id = insertDoc._id
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.updateOneDoc'
+                        arguments: ['instructionsTest', newDoc, oldDoc]
+                    }, {
+                        name: 'failMethod'
+                    }
+                ]
                 committed.enqueue update, (err,status) ->
                     should.not.exist err
                     status.should.be.string 'Failed'
@@ -801,16 +824,61 @@ describe 'Committed', ->
                             delete docsInDB[0]._id
                             docsInDB[0].should.deep.equal 
                                 revision: 
-                                    contentRevision: 2
-                                    otherRevision: 1
+                                    content: 0
+                                    otherContent: 0
                                 content: 'here'
                                 otherContent: "other"
                             done()
 
+        it 'updateOneDoc should not update a document whose revision has changed', (done) ->
+            insertDoc =
+                content: 'here'
+                otherContent: "other"
+            oldDoc =
+                revision: content: 0
+                content: 'here'
+            newDoc = 
+                revision: content: 0
+                content: 'here again'
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', insertDoc]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = insertDoc._id
+                # if we do the update with the same docs twice, the second should fail the transaction.
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.updateOneDoc'
+                        arguments: ['instructionsTest', newDoc, oldDoc]
+                    }, {
+                        name: 'db.updateOneDoc'
+                        arguments: ['instructionsTest', newDoc, oldDoc]
+                    }
+                ]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Failed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({content:"here"}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            should.exist docsInDB[0]._id
+                            delete docsInDB[0]._id
+                            docsInDB[0].should.deep.equal 
+                                revision: 
+                                    content: 0
+                                    otherContent: 0
+                                content: 'here'
+                                otherContent: "other"
+                            done()
+
+
     describe 'chained transactions', ->
 
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'chainedTest', (err, collection) -> 
                     collection.remove {}, {w:1}, done
@@ -982,7 +1050,7 @@ describe 'Committed', ->
                     collection.find({execute: 'all'}).toArray (err, docs) ->
                         docs.length.should.equal 6
                         #annoying afterEach does a stop, so start again
-                        committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+                        committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
                             should.not.exist err
                             done()
 
@@ -1032,7 +1100,7 @@ describe 'Committed', ->
                             itemDone()
                 , (err) ->
                     should.not.exist err
-                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+                    committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
@@ -1093,7 +1161,7 @@ describe 'Committed', ->
                             itemDone()
                 , (err) ->
                     should.not.exist err
-                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+                    committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
@@ -1124,28 +1192,13 @@ describe 'Committed', ->
             _db.collection 'transactions', {strict:true}, (err, collection) ->
                 collection.insert bigT, {w:1, journal: true}, (err, objects) ->
                     should.not.exist err
-                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+                    committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
                             collection.find({content:'here'}).toArray (err, docs) ->
                                 docs.length.should.equal 2
                                 done()
-###
-
-
-have changed the signature of updateOneDoc: revisionName at end.
-
-
-revision updateOneOp and insert; pass revision structure at start. increment all if none specified.
-
-
-global lock needs to increment the revison of every document in the system.
-pass revison info in at start, make insert / update aware of revision info.
-this is a potentially slow update. need some kind of protection, but maybe not
-this, eg if there was a models revision, this could be incremented to achieve
-the same? 
-
-###
+ 
 
     

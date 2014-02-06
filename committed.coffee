@@ -1,5 +1,7 @@
 async = require 'async'
 ObjectID = require('mongodb').ObjectID
+MongoObjects = ( require('mongodb')[t] for t in ['ObjectID', 'Binary', 'Code', 'DBRef', 'Double', 'MinKey', 'MaxKey', 'Symbol', 'Timestamp', 'Long'] )
+BuiltInObjects = [ Array, Boolean, Date, Number, String, RegExp ]
 
 _state = 'stopped'
 _queueLength = {}
@@ -507,6 +509,19 @@ _clone = (obj, mongolize=false) ->
 _mongolize = (obj) ->
     _clone(obj, true)
 
+#this is used to change a partial object into an array of mongo-dot-notation pairs
+_mongoFlatten = (obj) ->
+    results = []
+    for key, value of obj
+        #javascript you are so weak.
+        if not value? or typeof value isnt 'object' or BuiltInObjects.some((x)-> value instanceof x) or MongoObjects.some((x)->value instanceof x)
+            results.push [key, value]
+        else
+            flattened = _mongoFlatten(value)
+            for [otherKey, otherValue] in flattened
+                results.push ["#{key}.#{otherKey}", otherValue] 
+    return results
+
 
 #if rollback succeeds then set transaction.status = Failed
 rollback = (transaction, done) ->
@@ -688,38 +703,47 @@ _updateOneOptions =
     multi: false
     serializeFunctions: false
 
-_revisionedUpdateChecks = (revisionName, newPartialDocument, oldPartialDocument) ->
-    if not (newPartialDocument.revision? and newPartialDocument.revision[revisionName]? and newPartialDocument._id?)
-        return new Error("unable to do a revisioned update with a newPartialDocument which does not contain the specified revision key (#{revisionName}), or is missing _id")
-    if not (oldPartialDocument.revision? and oldPartialDocument.revision[revisionName]? and oldPartialDocument._id?)
-        return new Error("unable to do a revisioned update with a oldPartialDocument which does not contain the specified revision key (#{revisionName}), or is missing _id")
-    if oldPartialDocument.revision[revisionName] isnt newPartialDocument.revision[revisionName]
-        return new Error("revision numbers between old and newPartialDocument must match (#{oldPartialDocument.revision[revisionName]} isnt #{newPartialDocument.revision[revisionName]}")
-    if typeof oldPartialDocument.revision[revisionName] isnt 'number'
-        return new Error("unable to do a revisioned update, revision.#{revisionName} isn't of type number")
-    return null
 
-_checkInstructionRevisionConfig = (instructionName, config, collectionName, revisions) ->
-    if revisions.length isnt 0 and (not config.revisions? or not config.revisions[collectionName]?)
-        return new Error("can't #{instructionName} documents with revisions #{revisions} when config.revisions has been supplied at committed.start for #{collectionName}")
-    for revisionName in revisions
+
+#the default instructions are all revision based, so check that we're set up to do this.
+_checkInstructionRevisionConfig = (instructionName, config, collectionName, revisionNames) ->
+    #are the parameters consistent with the config?
+    if not config.revisions? or not config.revisions[collectionName]?
+        return new Error("can't #{instructionName} documents in #{collectionName} without relevant config.revisions supplied at committed.start")
+    for revisionName in revisionNames
         if revisionName not in config.revisions[collectionName]
             return new Error("can't #{instructionName} documents with a revision '#{revisionName}' not specified in the config.revisions given at committed.start")
-    if revisions.length is 0 and config.revisions? and config.revisions[collectionName]?
-        return new Error("can't #{instructionName} documents without an explicit revision parameter given the revision config #{config.revision[collectionName]}")
     return null
 
-_processUpdateRevisions = (revisions) ->
+_processUpdateRevisions = (config, collectionName, revisions) ->
     #revisions can be null, string, array, or object
-    if not revisions? then revisions = []
+    #if revisions is null, then grab all the revisions from config and use these
+    if not revisions? then revisions = config.revisions[collectionName]
+    #if it's a string, then make it an array
     if typeof revisions is 'string' then revisions = [revisions]
     if Array.isArray(revisions)
+        #if we now have an array then we havn't been given specific version numbers, so these are null
         revisionNames = revisions
         revisionNumbers = null
     else
+        #if we were given an object with exact revision numbers, make a names list, and return both
         revisionNames = ( key for key of revisions )
         revisionNumbers = revisions
     return [revisionNames, revisionNumbers]
+
+_mongoOpsFromTo = (mongoOps, fromDoc, toDoc) ->
+    toFlattened = _mongoFlatten(toDoc)
+    fromFlattened = _mongoFlatten(fromDoc)
+    #the documents could contain too many revision keys, so don't copy these. 
+    mongoOps.$set[key] = value for [key, value] in toFlattened when key.indexOf('revision.') isnt 0
+    #make a list of fields to unset
+    newDotPaths = ( key for key, value of mongoOps.$set )
+    oldDotPaths = ( key for [key, value] in fromFlattened when key.indexOf('revision.') isnt 0 )
+    unsetDotPaths = ( path for path in oldDotPaths when path not in newDotPaths )
+    for path in unsetDotPaths
+        mongoOps.$unset[path] = 1
+    #remove _id from $set, we dont want to update this
+    delete mongoOps.$set._id
 
 
 # should be possible to do committed.register('db', committed.db) to use these fns
@@ -737,6 +761,8 @@ _processUpdateRevisions = (revisions) ->
 #  - collectionName1 had two sub-schemas, so at insert collection1Doc.revision is {subSchema1: 0 subSchema2: 0}
 #  - collectionName2 is not a revisioned collection and so will not have a .revision property.
 
+# if you decide to fail an instruction by returning done(null, false) you should push a reason to transaction.execution.info
+
 exports.db =
     pass: (config, transaction, state, args, done) ->
         done(null, true)
@@ -751,15 +777,16 @@ exports.db =
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insert command"))
         if not Array.isArray(documents) then documents = [documents]
 
-        if not revisions? then revisions = []
-        #check the revisions param is consistent with any config.revisions settings
-        error = _checkInstructionRevisionConfig 'insert', config, collectionName, revisions
+        [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
+        error = _checkInstructionRevisionConfig 'insert', config, collectionName, revisionNames
         if error?
             return done(error)
+
+        if not revisions? then revisions = config.revisions[collectionName]
+        #check the revisions param is consistent with any config.revisions settings
         #check the docs dont have any revision info if we're intending to automatically set revision info
         if revisions.length > 0 and documents.some((d) -> d.revision?)
             return done(new Error("can't insert documents with revisions #{revisions} when some of the supplied documents already have a revision property"))
-
 
         config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
@@ -819,12 +846,14 @@ exports.db =
     # 1. a string containing revisions names which we should increment
     # 2. an array of such strings
     # 3. an object whose key,value are a revision name and revision number respectively
-    # if you supply revision numbers, that saves a read+write. 
-    updateOneOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, revisions, etc...], done) ->
+    # if you supply revision numbers, that saves a read+write.
+    # mongoProjector is used to take a copy of the pre-commit values, if it's null, the whole document will be copied
+    # the object must not contain projection operations.
+    updateOneOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
-        if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
+        if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to updateOneOp command"))
 
-        [revisionNames, revisionNumbers] = _processUpdateRevisions revisions
+        [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
         #check the revisions param is consistent with any config.revisions settings
         error = _checkInstructionRevisionConfig 'updateOneOp', config, collectionName, revisionNames
         if error?
@@ -841,13 +870,22 @@ exports.db =
 
             #irrespective of whether we've been given required revision numbers, we need their current values written into the transaction right away
             mongoSelector = _mongolize(selector)
-            mongoProjector = _id: 1
-            for revisionName of revisionNames
-                mongoProjector["revision.#{revisionName}"] = 1
+            if rollbackProjector?
+                mongoProjector = _mongolize(rollbackProjector)
+                mongoProjector._id = 1
+                #always get the revision sub-doc - whittle this down to just the revisions of interest during rollback
+                mongoProjector.revision = 1
+            else
+                #if we weren't given a rollback projector then grab the whole document.
+                mongoProjector = {}
+
             #we're going to read this into memory, it's got to go back out again to the transaction collection. 
             collection.find(mongoSelector, mongoProjector).toArray (err, docs) ->
                 if err? then return done(err, null)
-                if docs.length isnt 1 then return done(null, false) #the instruction has failed, we must find exactly one doc
+                if docs.length isnt 1 
+                    #the instruction has failed, we must find exactly one doc
+                    transaction.execution.info.push "updateOneOp can update only one document, using #{JSON.stringify mongoSelector} #{docs.length} were found"
+                    return done(null, false) 
                 #if we have a document to update, we should save its id and exact revision into the transaction
                 state.updated = docs[0]
                 _updateTransactionState transaction, (err) ->
@@ -861,14 +899,23 @@ exports.db =
                             mongoUpdateOps.$inc["revision.#{revisionName}"] = 1 for revisionName in revisionNames
                         collection.update mongoSelector, mongoUpdateOps, _updateOneOptions, (err, updated) ->
                             if err? then return done(err, null)
-                            if updated isnt 1 then return done(null, false) #the instruction has failed
+                            if updated isnt 1 
+                                transaction.execution.info.push """
+                                    updateOneOp can update only one document, using #{JSON.stringify mongoSelector} #{updated} were updated
+                                    """
+                                return done(null, false) #the instruction has failed
                             return done(null, true)
 
                     if revisionNumbers?
                         #then we should check to see if what we just got meets the requirements
-                        matches = ( state.updated[revisionName] is revisionNumber for revisionName, revisionNumber of revisionNumbers )
+                        matches = ( state.updated.revision[revisionName] is revisionNumber for revisionName, revisionNumber of revisionNumbers )
                         if not matches.every((x)->x)
                             #we have failed to meet the required version number
+                            transaction.execution.info.push """
+                                updateOneOp failed to find documents to match the required revisions. 
+                                Found: #{JSON.stringify state.updated}. 
+                                Required: #{JSON.stringify revisionNumbers}.
+                                """
                             return done(null, false)
                         else
                             #revision requirements met, proceed with update
@@ -879,11 +926,11 @@ exports.db =
                         executeUpdate()
 
 
-    updateOneOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackOps, revisions, etc...], done) ->
+    updateOneOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
-        if not (collectionName? and selector? and updateOps? and rollbackOps?) then return done(new Error("null or missing argument to updateOneOp command"))
+        if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to updateOneOp command"))
 
-        [revisionNames, revisionNumbers] = _processUpdateRevisions revisions
+        [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
 
         config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
@@ -895,7 +942,7 @@ exports.db =
                 #then we wrote ids and revisions before the update, can we still find these documents?
                 revisionSelector = _id: state.updated._id
                 for revisionName, revisionNumber of state.updated.revision
-                    revisionSelector = revisionSelector["revision.#{revisionName}"] = revisionNumber
+                    revisionSelector["revision.#{revisionName}"] = revisionNumber
                 collection.count revisionSelector, (err, count) ->
                     if count is 1
                         #then we have not made an update, so there's nothing to rollback
@@ -904,75 +951,145 @@ exports.db =
                         #then we must have updated, so we must rollback. This
                         #is true because we wrote our state.updated values
                         #from a within-queue read.
-                        mongoRollbackOps = _mongolize(rollbackOps)
-                        if revisionNames.length > 0
-                                if not mongoUpdateOps.$inc? then mongoUpdateOps.$inc = {}
-                                mongoUpdateOps.$inc["revision.#{revisionName}"] = -1 for revisionName in revisionNames
+                        mongoRollbackOps = $set: {}, $inc: {}, $unset:{}
+                        #only decrement the revision numbers that we specifically asked to increment
+                        mongoRollbackOps.$inc["revision.#{revisionName}"] = -1 for revisionName in revisionNames
+                        #take the projection that was stored and convert it to mongo dot notation
+                        flattened = _mongoFlatten(state.updated)
+                        #the stored projection could contain too many revision keys, so don't copy these. 
+                        #also don't update _id.
+                        mongoRollbackOps.$set[key] = value for [key, value] in flattened when key.indexOf('revision.') isnt 0
+                        #make a list of fields to unset
+                        #must include any operation that sets a field which wasnt in state.updated; take care of rename
+                        originalDotPaths = ( key for key, value of mongoRollbackOps.$set when key.indexOf('revision.') isnt 0)
+                        settyOperators = ['__inc', '__setOnInsert', '__set', '__addToSet', '__push', '__bit']
+                        updatedDotPaths = []
+                        for op in settyOperators
+                            if updateOps[op]?
+                                updatedDotPaths.push(path) for path of updateOps[op]
+                        unsetDotPaths = ( path for path in updatedDotPaths when path not in originalDotPaths )
+                        #$rename is a special case, it's the rename-to field that we're interested
+                        if updateOps['__rename']?
+                            renamedTo = ( to for from, to of updateOps['__rename'] )
+                            unsetDotPaths.push(to) for to in renamedTo when to not in originalDotPaths
+                        for path in unsetDotPaths
+                            mongoRollbackOps.$unset[path] = 1
+                        #remove _id from $set, we dont want to update this
+                        delete mongoRollbackOps.$set._id
 
-                        return collection.update _mongolize(selector), mongoRollbackOps, _updateOneOptions, (err, updated) ->
+                        #choose just the document that was updated from it's _id
+                        mongoSelector = _id: state.updated._id
+
+                        return collection.update mongoSelector, mongoRollbackOps, _updateOneOptions, (err, updated) ->
                             if err? then return done(err, false)
-                            if updated isnt 1 then return done(null, false) #the rollback has failed
+                            if updated isnt 1
+                                transaction.execution.info.push """
+                                    updateOneOpRollback failed to update exactly one document (actually #{updated}) during rollback
+                                    """
+                                return done(null, false) #the rollback has failed
                             return done(null, true)
                     else
                         #general rollback failure
-                        return done(null, false)                            
+                        transaction.execution.info.push """
+                            updateOneOpRollback found too many documents (#{count}) when trying to find out if an updateOneOp had occurred
+                            """
+                        return done(null, false)
 
 
-    updateOneDoc: (config, transaction, state, [collectionName, newPartialDocument, oldPartialDocument, revisionName, etc...], done) ->
-        if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdate"))
-        if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdate command"))
+    #updateOneDoc updates a parts of a document. It isnt save, if you want to
+    #save the whole document you should use a different instruction.
 
-        if not revisionName? or not config.revision?
-            return done( new Error("to use updateOneDoc config.revision info must be given during committed.start"))
+    updateOneDoc: (config, transaction, state, [collectionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to updateOneDoc"))
+        if not (collectionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to updateOneDoc command"))
+        if not oldPartialDocument._id? or not newPartialDocument._id? or not oldPartialDocument._id.equals(newPartialDocument._id)
+            return done(new Error("both old and new partial documents must have _ids, and they must match to updateOneDoc"))
+        if not oldPartialDocument.revision? then return done(new Error("oldPartialDocument must contain revision information to updateOneDoc"))
 
+        #take the revision sub-doc of the old partial doc to be the revisions that we're interested in
+        revisionNames = ( revisionName for revisionName of oldPartialDocument.revision )
+        error = _checkInstructionRevisionConfig 'updateOneDoc', config, collectionName, revisionNames
+        if error?
+            return done(error)
+
+        #first we must establish whether the revision requirements for this
+        #command can be satisfied. specifically, whether the document revision
+        #in oldPartialDocument is current
         config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
-            fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
-            if fail? then return done(fail)
+            oldSelector = {}
+            oldSelector[key] = value for [key, value] in _mongoFlatten(oldPartialDocument)
+            collection.count oldSelector, (err, count) ->
+                if err? then return done(err, false)
+                #this will also confirm that in the event of rollback we'll be writing something valid.
+                if count isnt 1
+                    transaction.execution.info.push """
+                        updateOneDoc failed to find exactly one document (found #{count}) matching the given oldPartialDocument using #{oldSelector})
+                        """
+                    return done(null, false)
+                #if we find exactly one match then our revision requirement is met, we should record the fact that the instruction is safe to proceed
+                state.safeToExecuteInstruction = true
+                _updateTransactionState transaction, (err) ->
+                    if err? then return done(err, null)
+                    #the state is now saved - we'll know what to do in the event of rollback.
+                    #now work out the operations necessary to do a partialdoc update
+                    mongoOps = $set: {}, $unset:{}, $inc:{}
+                    _mongoOpsFromTo(mongoOps, oldPartialDocument, newPartialDocument)
+                    #update all the relevant revisions
+                    mongoOps.$inc["revision.#{revisionName}"] = 1 for revisionName of oldPartialDocument.revision
+                    collection.update {_id: oldPartialDocument._id}, mongoOps, _updateOneOptions, (err, updated) ->
+                        if err? then return done(err, null)
+                        if updated isnt 1 
+                            transaction.execution.info.push """
+                                updateOneDoc must update exactly one document, using #{JSON.stringify mongoOps} #{updated} were updated
+                                """
+                            return done(null, false) #the instruction has failed
+                        return done(null, true)
 
-            revisionKey = "revision.#{revisionName}"
-            #create a mongo selector to find the exact revision given in newPartialDocument
-            mongoSelector = 
-                _id: newPartialDocument._id
-            mongoSelector[revisionKey]= oldPartialDocument.revision[revisionName]
-            #however, we don't want to actually $set ANY revision values, so create a fields object without the revision subdoc
-            fields = {}
-            fields[key] = value for key,value of newPartialDocument when key isnt 'revision' and key isnt '_id'
-            #now create mongo operations to $increment the revision and $set the given fields
-            mongoOps = 
-                $set: fields
-                $inc: {}
-            mongoOps.$inc[revisionKey] = 1
-            collection.update mongoSelector, mongoOps, _updateOneOptions, (err, updated) ->
-                if err? then return done(err, null)
-                if updated isnt 1 then return done(null, false) #the instruction has failed
-                return done(null, true)
 
-    updateOneDocRollback: (config, transaction, state, [collectionName, revisionName, newPartialDocument, oldPartialDocument, etc...], done) ->
-        if etc.length isnt 0 then return done(new Error("too many values passed to revisionedUpdateRollback"))
-        if not (collectionName? and revisionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to revisionedUpdateRollback command"))
+    updateOneDocRollback: (config, transaction, state, [collectionName, newPartialDocument, oldPartialDocument, etc...], done) ->
+        if etc.length isnt 0 then return done(new Error("too many values passed to updateOneDocRollback"))
+        if not (collectionName? and newPartialDocument? and oldPartialDocument?) then return done(new Error("null or missing argument to updateOneDocRollback command"))
+        if not oldPartialDocument._id? or not newPartialDocument._id? or not oldPartialDocument._id.equals(newPartialDocument._id)
+            return done(new Error("both old and new partial documents must have _ids, and they must match to updateOneDocRollback"))
+        if not oldPartialDocument.revision? then return done(new Error("oldPartialDocument must contain revision information to updateOneDocRollback"))
 
-        config.db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err, false)
-            fail = _revisionedUpdateChecks(revisionName, newPartialDocument, oldPartialDocument)
-            if fail? then return done(fail)
+        if not state.safeToExecuteInstruction
+            #then the revision requierments for this instruction were not met,
+            #or the instruction was interrupted early, so there is nothing to
+            #rollback
+            return done(null, true)
+        else
+            #revision requirments for the original instruction were met
+            config.db.collection collectionName, {strict: true}, (err, collection) ->
+                if err? then return done(err, false)
 
-            revisionKey = "revision.#{revisionName}"
-            #create a document with only the revision for this partial document, we must rollback ONLY our revision number
-            oldFields = {}
-            oldFields[revisionKey] = oldPartialDocument.revision[revisionName]
-            oldFields[key] = value for key,value of oldPartialDocument when key isnt 'revision' and key isnt '_id'
+                #because revision requirements were met at start of
+                #instruction, if the revision numbers was bumped up, it means
+                #the instruction was executed
+                selector = {_id: oldPartialDocument._id }
+                selector["revision.#{revisionName}"] = oldPartialDocument.revision[revisionName] + 1 for revisionName of oldPartialDocument.revision
+                collection.count selector, (err, count) ->
+                    if err? then return done(err, false)
+                    if count is 0
+                        #then the update was never completed, there's nothing to rollback
+                        return done(null, true)
+                    else
+                        #the update must have gone through, rollback
+                        mongoOps = $set: {}, $unset:{}
+                        _mongoOpsFromTo(mongoOps, newPartialDocument, oldPartialDocument)
+                        #reset all the relevant revisions
+                        mongoOps.$set["revision.#{revisionName}"] = oldPartialDocument.revision[revisionName] for revisionName of oldPartialDocument.revision
 
-            #create a mongo selector which will match the document only if our original update operation was successful
-            newFields = {}
-            newFields[revisionKey] = newPartialDocument.revision[revisionName] + 1 #if we succeeded before then we'll have incremented this value
-            newFields[key] = value for key,value of newPartialDocument when key isnt 'revision'
+                        collection.update {_id: oldPartialDocument._id}, mongoOps, _updateOneOptions, (err, updated) ->
+                                if err? then return done(err, null)
+                                if updated isnt 1 
+                                    transaction.execution.info.push """
+                                        updateOneDocRollback must update exactly one document, using #{JSON.stringify mongoOps} #{updated} were updated
+                                        """
+                                    return done(null, false) #the instruction has failed
+                                return done(null, true)
 
-            #find the exact document we would have set if the update had been successful, and update fields to be exactly what we had before
-            collection.update newFields, { $set: oldFields }, _updateOneOptions, (err, updated) ->
-                if err? then return done(err, null)
-                # doesn't matter whether we updated anything, the original operation may have failed due to collision
-                return done(null, true)
 
 
 exports.transaction = (queueName, username, instructions, rollback) ->

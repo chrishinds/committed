@@ -182,7 +182,7 @@ _drainQueues = (queues, done) ->
     # wait until every _queue's _queueLength is 0, and there are no immediate transactions in progress, check every 10ms
     async.until(
         () ->
-            (_queueLength[name] is 0 for name in queues).every((x) -> x) and _immediateCounter is 0
+            (_queueLength[name] is 0 or not _queueLength[name]? for name in queues).every((x) -> x) and _immediateCounter is 0
         , (untilBodyDone) ->
             setTimeout untilBodyDone, 10
         , (err) ->
@@ -224,10 +224,14 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
         #the commit fn will be the queue worker; only one worker per queue for sequentiality
         _queues[queueName] = async.queue(commit, 1)
         _queueLength[queueName] = 0
+        #when the queue's empty, free up memory
+        _queues[queueName].drain = () ->
+            delete _queues[queueName]
+            delete _queueLength[queueName]
     #we're about to add an item to the queue, so increment the queue count
     _queueLength[queueName] += 1
     _queues[queueName].push transaction, (etc...) ->
-        _queueLength[queueName] -= 1
+        if _queueLength[queueName]? then _queueLength[queueName] -= 1
         done(etc...)
 
 _checkTransaction = (transaction) ->

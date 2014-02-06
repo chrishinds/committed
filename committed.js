@@ -247,7 +247,7 @@
         _results = [];
         for (_i = 0, _len = queues.length; _i < _len; _i++) {
           name = queues[_i];
-          _results.push(_queueLength[name] === 0);
+          _results.push(_queueLength[name] === 0 || (_queueLength[name] == null));
         }
         return _results;
       })()).every(function(x) {
@@ -302,12 +302,18 @@
     if (_queues[queueName] == null) {
       _queues[queueName] = async.queue(commit, 1);
       _queueLength[queueName] = 0;
+      _queues[queueName].drain = function() {
+        delete _queues[queueName];
+        return delete _queueLength[queueName];
+      };
     }
     _queueLength[queueName] += 1;
     return _queues[queueName].push(transaction, function() {
       var etc;
       etc = 1 <= arguments.length ? __slice.call(arguments, 0) : [];
-      _queueLength[queueName] -= 1;
+      if (_queueLength[queueName] != null) {
+        _queueLength[queueName] -= 1;
+      }
       return done.apply(null, etc);
     });
   };

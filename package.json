@@ -1,6 +1,6 @@
 {
     "name"   : "committed",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "private": false,
     "author" : "Chris Hinds <chris.hinds@gmail.com>",
     "repository": {
@@ -19,8 +19,8 @@
         "mocha"                     : "1.9.0",
         "chai"                      : "1.6.0"
     },
-    "description": "A mongodb-based framework for creating and executing queued, auditable, failure-resistant transactions that match the semantics of your data whilst maximising asynchronisity.",
+    "description": "This libray can be used to create mongodb transactions that are Atomic, Isolated and Durable. If you're using mongo you already know it's not ACID compliant. This library doesn't magically change that. However, used carefully it can help you hit some common requirements. Isolation for multi-collection operations is easy to achieve using committed's transaction queues. Atomicity and Durability require more effort, as you must capture db operations as 'instructions' with matching rollbacks. A small set of instructions is supplied. When used in this way, transaction objects are written to their own collection which therefore also acts as a robust audit trail.",
     "contributors": ["Simon Bond <simon.bond@gmail.com>"],
-    "keywords": ["Transaction", "MongoDB", "Audit", "Commit", "Rollback", "Failure"],
+    "keywords": ["Transaction", "MongoDB", "Audit", "Commit", "Rollback", "Failure", "ACID"],
     "main":"./committed.js"
 }

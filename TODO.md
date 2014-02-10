@@ -5,10 +5,7 @@ Todo
 Now
 ---
 
-- fill in pending tests
-- enqueue functions which might then produce a transaction for execution, or not.
-- function execution within queues, eg via exports.enqueue, could be used for reads or writes without transactions. 
-- separate exports.enqueueRead to separate functions which just do reads from those which might write too, because when the queue's empty it's possible to do the reads in parallel.
+- fill in pending instruction tests
 
 Soon
 ----

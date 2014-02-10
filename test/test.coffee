@@ -527,7 +527,7 @@ describe 'Committed', ->
             async.parallel tests, done
 
 
-        it 'should fail a transaction if not started', (done) ->
+        it 'should return an err if transactions are enqueued when not started', (done) ->
 
             committed.stop (err) ->
                 should.not.exist err
@@ -537,22 +537,19 @@ describe 'Committed', ->
                 tests.push (done) ->
                     transaction = committed.transaction 'testQ'
                     committed.enqueue transaction, (err, status) ->
-                        should.not.exist err
-                        status.should.have.string 'Failed'
+                        should.exist err
                         done()
 
                 tests.push (done) ->
                     transaction = committed.transaction()
                     committed.immediately transaction, (err, status) ->
-                        should.not.exist err
-                        status.should.have.string 'Failed'
+                        should.exist err
                         done()
 
                 tests.push (done) ->
                     transaction = committed.transaction 'GlobalLock'
                     committed.withGlobalLock transaction, (err, status) ->
-                        should.not.exist err
-                        status.should.have.string 'Failed'
+                        should.exist err
                         done()
 
                 async.parallel tests, (err) ->
@@ -1201,4 +1198,192 @@ describe 'Committed', ->
                                 done()
  
 
-    
+    describe 'function enqueuement', ->
+        beforeEach (done) ->
+            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: functionTest: ['number']}, (err) ->
+                should.not.exist err
+                _db.createCollection 'functionTest', (err, collection) -> 
+                    collection.remove {}, {w:1}, done
+
+        afterEach (done) ->
+            committed.stop done
+
+        it 'should execute writer functions which return a status string', (done) ->
+            myWriter = committed.writer 'myQueue', (writerDone) ->
+                _db.collection 'functionTest', (err, collection) ->
+                    if err? then return writerDone(err, null)
+                    collection.insert {mycontent: 'is good'}, {w:1, journal: true}, (err, objects) ->
+                        if err? then return writerDone(err, null)
+                        writerDone(null, 'Committed')
+            committed.enqueue myWriter, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'functionTest', (err, collection) ->
+                    collection.count {mycontent: 'is good'}, (err, count) ->
+                        count.should.equal 1
+                        done()
+
+        it 'should execute writer functions which produce a transaction object, and save it to the transaction collection', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['functionTest', docs]}
+            ]
+            committed.enqueue transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                myWriter = committed.writer 'a_queue', (done) ->
+                    setTimeout( 
+                        () -> 
+                            ids = ( d._id for d in docs )
+                            update = committed.transaction "a_queue", 'user', [
+                                {
+                                    name: 'db.updateOneOp'
+                                    arguments: ['functionTest', {_id: {__in: ids}, i: {__gt: 2}}, {__inc: j: 1} ]
+                                }
+                            ]
+                            return done(null, update)
+                        , 500
+                        )
+
+                _db.collection 'transactions', (err, transactions) ->
+                    transactions.count (err, initialCount) ->
+                        should.not.exist err
+                        committed.enqueue myWriter, (err,status) ->
+                            should.not.exist err
+                            status.should.be.string 'Committed'
+                            _db.collection 'functionTest', (err, functionTestCollection) ->
+                                functionTestCollection.find({j:1}).toArray (err, docsInDB) ->
+                                    should.not.exist err
+                                    docsInDB.length.should.equal 1
+                                    docsInDB[0].revision.number.should.equal 1
+                                    done()
+
+        it 'should execute writers with global lock', (done) ->
+            myWriter = committed.writer 'GlobalLock', (writerDone) ->
+                _db.collection 'functionTest', (err, collection) ->
+                    if err? then return writerDone(err, null)
+                    collection.insert {mycontent: 'is good'}, {w:1, journal: true}, (err, objects) ->
+                        if err? then return writerDone(err, null)
+                        writerDone(null, 'Committed')
+            committed.withGlobalLock myWriter, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'functionTest', (err, collection) ->
+                    collection.count {mycontent: 'is good'}, (err, count) ->
+                        count.should.equal 1
+                        done()
+
+        it 'should execute writer functions which produce a transaction chain', (done) ->
+            doc = i:1
+            insert = committed.transaction "queue", 'user', [
+                {name: 'db.insert', arguments: ['functionTest', doc]}
+            ]
+            myChain = null
+            updateWriter = committed.writer 'queue', (done) ->
+                setTimeout( 
+                    () -> 
+                        update = committed.transaction "queue", 'user', [
+                            {
+                                name: 'db.updateOneOp'
+                                arguments: ['functionTest', {_id: doc._id, i: 1}, {__inc: i: 1} ]
+                            }
+                        ]
+                        update_2 = committed.transaction "queue_2", 'user', [
+                            {
+                                name: 'db.updateOneOp'
+                                arguments: ['functionTest', {_id: doc._id, i: 2}, {__inc: i: 1} ]
+                            }
+                        ]
+                        update_3 = committed.transaction "queue_3", 'user', [
+                            {
+                                name: 'db.updateOneOp'
+                                arguments: ['functionTest', {_id: doc._id, i:3}, {__inc: i: 1} ]
+                            }
+                        ]
+                        myChain = committed.chain([update, update_2, update_3])
+                        return done(null, myChain)
+                    , 500
+                    )
+
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+            committed.enqueue updateWriter, (err,status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'functionTest', (err, functionTestCollection) ->
+                    functionTestCollection.count {i:4}, (err, count) ->
+                        should.not.exist err
+                        count.should.equal 1
+                        done()
+
+        it 'cannot build chains made up of writers', (done) ->
+            doc = i: 1
+            inWriter = committed.writer 'queue', (done) ->
+                insert = committed.transaction "queue", 'user', [
+                    name: 'db.insert', arguments: ['functionTest', doc]
+                ]
+                return done(null, insert)
+            upWriter = committed.writer 'queue_2', (done) ->
+                update = committed.transaction "queue_2", 'user', [
+                    name: 'db.updateOneOp', arguments: ['functionTest', {_id: doc._id, i: 1}, {__inc: i: 1} ]
+                ]
+                return done(null, update)
+            makeChain = () ->
+                committed.chain [inWriter, upWriter] 
+            makeChain.should.throw(Error)
+            done()
+
+        it 'should execute reader functions', (done) ->
+            myReader = committed.reader 'queue', (readerDone) ->
+                setTimeout(
+                    () ->
+                        readerDone(null, 1, 2, 3)
+                    )
+            committed.enqueue myReader, (err, a, b, c) ->
+                should.not.exist err
+                a.should.equal 1
+                b.should.equal 2
+                c.should.equal 3
+                done()
+
+        it 'should execute readers with global lock', (done) ->
+            myReader = committed.reader 'GlobalLock', (readerDone) ->
+                setTimeout(
+                    () ->
+                        readerDone(null, 1, 2, 3)
+                    )
+            committed.withGlobalLock myReader, (err, a, b, c) ->
+                should.not.exist err
+                a.should.equal 1
+                b.should.equal 2
+                c.should.equal 3
+                done()
+
+        it 'should return an error when a function produces a transaction whose queue fails to match that of the function', (done) ->
+            badWriter = committed.writer 'queue', (done) ->
+                insert = committed.transaction "wrong_queue", 'user', [
+                    name: 'db.insert', arguments: ['functionTest', {i: 1}]
+                ]
+                return done(null, insert)
+            committed.enqueue badWriter, (err, status) ->
+                should.exist err
+                should.not.exist status
+                done()
+
+        it 'a writer should pass through an error when the function produces one', (done) ->
+            badWriter = committed.writer 'queue', (done) ->
+                return done(new Error("this is my error"), null)
+            committed.enqueue badWriter, (err, status) ->
+                should.exist err
+                err.message.should.be.string "this is my error"
+                should.not.exist status
+                done()
+
+        it 'a reader should pass through an error when its function produces one', (done) ->
+            myReader = committed.reader 'queue', (readerDone) ->
+                readerDone(new Error("my error"))
+            committed.enqueue myReader, (err) ->
+                should.exist err
+                err.message.should.be.string 'my error'
+                done()

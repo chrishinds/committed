@@ -237,13 +237,16 @@ _enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
 _checkTransaction = (transaction) ->
     if transaction.status? and transaction.status isnt 'Queued'
         return new Error("Can't queue a transaction which is at a status other than Queued (or null)")
-    if not _instructionsExistFor(transaction)
-        return new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry")
-    if transaction.rollback? and transaction.rollback.length isnt transaction.instructions.length
-        return new Error("Can't queue a transaction with an explicit rollback instructions whose length is not the same as its instructions array")
-    if transaction.after? and not transaction.after.every( (x) -> x.status? and x.status is 'Queued' )
-        return new Error("Can't queue a transaction chain where one transaction is at a status other than Queued")
-
+    if typeof(transaction) isnt 'function'
+        if not _instructionsExistFor(transaction)
+            return new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry")
+        if transaction.rollback? and transaction.rollback.length isnt transaction.instructions.length
+            return new Error("Can't queue a transaction with an explicit rollback instructions whose length is not the same as its instructions array")
+        if transaction.after? and not transaction.after.every( (x) -> x.status? and x.status is 'Queued' )
+            return new Error("Can't queue a transaction chain where one transaction is at a status other than Queued")
+    else
+        if not transaction.fnType? or transaction.fnType not in ['reader', 'writer']
+            return new Error("can't queue a function which doesn't have a fnType of 'reader' or 'writer'")
 
 _instructionsExistFor = (transaction) ->
     if transaction.rollback? #if there's an explicit rollback array then check that all its instructions are good
@@ -294,9 +297,7 @@ exports.enqueue = (transaction, done) ->
     #any drains are allowed time to run (eg. there's one on the GlobalLock queue)
     setImmediate () ->
         if _state is 'stopped'
-            transaction.status = 'Failed'
-            transaction.execution.info.push "unable to enquue transaction, committed was at state '#{_state}'"
-            return done(null, 'Failed')
+            return done( new Error("unable to execute transaction immediately, committed was at state '#{_state}'"), null)
         else
             return _enqueue(transaction, done)
 
@@ -308,9 +309,7 @@ exports.immediately = (transaction, done) ->
     #any drains are allowed time to run
     setImmediate () ->
         if _state is 'stopped'
-            transaction.status = 'Failed'
-            transaction.execution.info.push "unable to execute transaction immediately, committed was at state '#{_state}'"
-            return done(null, 'Failed')
+            return done( new Error("unable to execute transaction immediately, committed was at state '#{_state}'"), null)
         else
             return _immediately(transaction, done)
 
@@ -355,9 +354,7 @@ exports.withGlobalLock = (transaction, done) ->
     #previous call. setImmediate will preserve order. 
     setImmediate () ->
         if _state is 'stopped' 
-            #committed is 'stopped'
-            transaction.status = "Failed"
-            transaction.execution.info.push "unable to enqueue transaction withGlobalLock, committed was at state '#{_state}'"
+            return done( new Error("unable to execute transaction immediately, committed was at state '#{_state}'"), null)
             return done(null, 'Failed')
         else
             #then this transaction is good to proceed
@@ -600,61 +597,113 @@ _shiftChain = (transaction) ->
         if key not in ['before', 'after', '_id']
             transaction[key] = value
 
-_retry = (transaction, retryFn, failFn) ->
-
-
 
 #worker function for regular queues; manages transaction chains, delegates
 #commit of the individual transaction to _commitCore
-commit = (transaction, done, retries=2) ->
-    _commitCore transaction, (err, status) ->
-        if not (_hasBefore(transaction) or _hasAfter(transaction))
-            #then this transaction isnt a chain, so callback directly
-            return done(err, status)
-        else 
-            #this transaction is a chain
-            switch status
-                when 'Committed'
-                    if _hasAfter(transaction)
-                        #then there are transaction yet to execute, we should move onto the next item in the chain
-                        _shiftChain(transaction)
-                        return _requeue(transaction, done)
-                    else
-                        return done(err, status)
-                when 'Failed', 'FailedCommitErrorRollbackOk'
-                    if not _hasBefore(transaction)
-                        #then we are the first in the chain, so simply callback and let the client retry if they wish
-                        return done(err, status)
-                    else
-                        #we are not the chain's first transaction, so retry may be worthwhile; wait about a second
-                        if retries > 0 
-                            setTimeout( 
-                                () -> 
-                                    _updateTransactionStatus transaction, transaction.status, 'Queued', null, null, "#{status} #{retries} retries remaining", (statusErr) ->
-                                        if statusErr? then return done(statusErr, transaction.status)
-                                        commit(transaction, done, retries-1)
-                                , 500 + Math.floor(1000*Math.random())
-                            )
-                            return null
+commit = (transactionOrFunction, done, retries=2) ->
+    #this function will do the work of committing, but first we need to work
+    #out whether we've been given a transaction or a function
+    doCommit = (transaction) -> 
+        _commitCore transaction, (err, status) ->
+            if not (_hasBefore(transaction) or _hasAfter(transaction))
+                #then this transaction isnt a chain, so callback directly
+                return done(err, status)
+            else 
+                #this transaction is a chain
+                switch status
+                    when 'Committed'
+                        if _hasAfter(transaction)
+                            #then there are transaction yet to execute, we should move onto the next item in the chain
+                            _shiftChain(transaction)
+                            return _requeue(transaction, done)
                         else
-                            #we have run out of retries, change the status to
-                            #'ChainFailed' so that the client knows that their
-                            #first transaction Committed, but a subsequent one
-                            #failed. keep the original status on the
-                            #execution.info array
-                                return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
-                                    if statusErr? then return done(statusErr, transaction.status)
-                                    return done(err, 'ChainFailed')
-                else
-                    #there's been a catastrophe retry is not appropriate
-                    if not _hasBefore(transaction)
-                        #then we're the first transaction in the chain, return directly
-                        return done(err, status)
+                            return done(err, status)
+                    when 'Failed', 'FailedCommitErrorRollbackOk'
+                        if not _hasBefore(transaction)
+                            #then we are the first in the chain, so simply callback and let the client retry if they wish
+                            return done(err, status)
+                        else
+                            #we are not the chain's first transaction, so retry may be worthwhile; wait about a second
+                            if retries > 0 
+                                setTimeout( 
+                                    () -> 
+                                        _updateTransactionStatus transaction, transaction.status, 'Queued', null, null, "#{status} #{retries} retries remaining", (statusErr) ->
+                                            if statusErr? then return done(statusErr, transaction.status)
+                                            commit(transaction, done, retries-1)
+                                    , 500 + Math.floor(1000*Math.random())
+                                )
+                                return null
+                            else
+                                #we have run out of retries, change the status to
+                                #'ChainFailed' so that the client knows that their
+                                #first transaction Committed, but a subsequent one
+                                #failed. keep the original status on the
+                                #execution.info array
+                                    return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
+                                        if statusErr? then return done(statusErr, transaction.status)
+                                        return done(err, 'ChainFailed')
                     else
-                        #we're not the first transaction, so keep the failing status in execution.info and return 'ChainFailed'
-                        return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
-                            if statusErr? then return done(statusErr, transaction.status)
-                            return done(err, 'ChainFailed') 
+                        #there's been a catastrophe retry is not appropriate
+                        if not _hasBefore(transaction)
+                            #then we're the first transaction in the chain, return directly
+                            return done(err, status)
+                        else
+                            #we're not the first transaction, so keep the failing status in execution.info and return 'ChainFailed'
+                            return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
+                                if statusErr? then return done(statusErr, transaction.status)
+                                return done(err, 'ChainFailed')
+
+    #but first, deal with the possibility that we've been given a function rather than a transaction object
+    if typeof(transactionOrFunction) is 'function'
+        #work out whether its a reader or a writer function
+        if transactionOrFunction.fnType is 'reader'
+            return transactionOrFunction (errAndResults...) ->
+                #a reader function passes it's err and results straight to the callback
+                done(errAndResults...)
+        if transactionOrFunction.fnType is 'writer'
+            #if its a writer function then we should look at what the callback returns 
+            return transactionOrFunction (err, transactionOrString) ->
+                #a writer function may either return a transaction, a chain, or a string
+                if (typeof(transactionOrString) is 'string' or transactionOrString instanceof String or not transactionOrString?)
+                    #if a string is returned then this should be the overall status of the transaction
+                    return done(err, transactionOrString)
+                else
+                    #we have been given a transaction or chain as a result of calling our function.
+                    if Array.isArray(transactionOrString)
+                        #then we have been given a chain so make it into a transaction first
+                        transaction = exports.chain transactionOrString
+                    else
+                        transaction = transactionOrString
+                    #ensure that the queue specified on the original function is the same as that of the produced transaction
+                    if transaction.queue isnt transactionOrFunction.queue
+                        return done( new Error("""
+                            transaction producing function assigned to a different queue from that of the transaction it produced 
+                            (#{transaction.queue} isnt #{transactionOrFunction.queue})
+                            """), null )
+                    #make the same checks against the transaction as we would have done in committed.enqueue
+                    error = _checkTransaction(transaction)
+                    if error? 
+                        return done( error, null ) 
+                    #a writer function may have had a chain
+                    if transactionOrFunction.before? or transactionOrFunction.after?
+                        if transaction.before? or transaction.after? 
+                            #then we have produced a chain as a result of the
+                            #writer function, in this situation it isn't clear
+                            #how to resolve the two chains into a sequential
+                            #order, so error
+                            return done( new Error(""" 
+                                a committed.writer which was part of a chain has produced a transaction object which is
+                                also part of a chain, it is not clear how to act sequentially on two chains.
+                                """), null)
+                        #copy the writer function's chain onto the object for onward processing. 
+                        transaction.before = transactionOrFunction.before
+                        transaction.after = transactionOrFunction.after
+                    #if everything still looks good then do the commit.
+                    return doCommit(transaction)
+    else 
+        #we must have been given a transaction object
+        return doCommit(transactionOrFunction)
+ 
 
 
 #commits a single transaction
@@ -1096,24 +1145,26 @@ exports.db =
 
 
 
+# helper function to produce a basic object to represent a transaction; what
+# the transactions collection will contain.
+
 exports.transaction = (queueName, username, instructions, rollback) ->
-    transaction =
-        softwareVersion: _softwareVersion
-        queue: queueName
-        position: null
-        startedAt: null
-        enqueuedAt: null
-        lastUpdatedAt: null
-        enqueuedBy: username
-        status: "Queued"
-        instructions: if instructions? then instructions else []
-        rollback: rollback
-        execution:
-            state: []
-            errors: []
-            info: []
-            results: null
-            rollback: null
+    softwareVersion: _softwareVersion
+    queue: queueName
+    position: null
+    startedAt: null
+    enqueuedAt: null
+    lastUpdatedAt: null
+    enqueuedBy: username
+    status: "Queued"
+    instructions: if instructions? then instructions else []
+    rollback: rollback
+    execution:
+        state: []
+        errors: []
+        info: []
+        results: null
+        rollback: null
 
 # Create a chain from the supplied array of transactions. This is to encourage
 # you not to create nested chains - these wont be executed. A chain is a list
@@ -1130,7 +1181,41 @@ exports.transaction = (queueName, username, instructions, rollback) ->
 exports.chain = (transactions) ->
     if not Array.isArray(transactions) or transactions.length is 0
         throw new Error("to chain transactions an array of transactions must be provided")
+    if transactions.some((x) -> typeof x is 'function')
+        throw new Error("cannot form a chain from reader/writer functions; chains must be composed of only transaction objects")
     first = transactions[0]
     first.before = []
     first.after = transactions[1..]
     return first
+
+
+#create a function for execution within a given queue. a writer takes a function:
+#   fn = (done) -> ...
+# and whose callback looks like:
+#   done(err, transactionChainOrString)
+# if done is given:
+#  - a string or null: this is taken to be the transaction's final status, and is returned; no transaction is written to the db
+#  - a transaction object: this is saved then executed immediately within the current queue
+#  - an array of transactions: this is converted to a chain and executed immediately within the current queue
+
+exports.writer = (queueName, fn) ->
+    if not typeof fn is 'function'
+        throw new Error("to create a committed.writer a function must be given as the second argument")
+    fn.fnType = 'writer'
+    fn.queue = queueName
+    fn.status = "Queued"
+    return fn
+
+#create a function for execution within a given queue. a reader takes a function:
+#   fn = (done) -> ...
+# its done callback is to be used:
+#   done(err, result1, result2, result...)
+# where the results are whatever has been created from a set of read operations within the queue
+
+exports.reader = (queueName, fn) ->
+    if not typeof fn is 'function'
+        throw new Error("to create a committed.reader a function must be given as the second argument")
+    fn.fnType = 'reader'
+    fn.queue = queueName
+    fn.status = "Queued"
+    return fn

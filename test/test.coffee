@@ -871,6 +871,63 @@ describe 'Committed', ->
                                 otherContent: "other"
                             done()
 
+        it 'updateManyOp should update many documents', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            insert = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', docs]}
+            ]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                ids = ( d._id for d in docs )
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.updateManyOp'
+                        arguments: ['instructionsTest', {_id: __in: ids}, {__inc: j: 1} ]
+                    }
+                ]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({j:1}).toArray (err, docsInDB) ->
+                            should.not.exist err
+                            docsInDB.length.should.equal 3
+                            for d in docsInDB
+                                d.revision.content.should.equal 1
+                                d.revision.otherContent.should.equal 1
+                            done()
+
+        it 'updateManyOpRollback should rollback many updates', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            insert = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', docs]}
+            ]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                ids = ( d._id for d in docs )
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.updateManyOp'
+                        arguments: ['instructionsTest', {_id: __in: ids}, {__inc: j: 1} ]
+                    }, {
+                        name: 'failMethod'
+                    }
+                ]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Failed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({_id: $in: ids}).toArray (err, docsInDB) ->
+                            should.not.exist err
+                            docsInDB.length.should.equal 3
+                            for d in docsInDB
+                                d.revision.content.should.equal 0
+                                d.revision.otherContent.should.equal 0
+                                should.not.exist d.j
+                            done()
+
 
     describe 'chained transactions', ->
 

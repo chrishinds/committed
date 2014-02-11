@@ -756,6 +756,13 @@ _updateOneOptions =
     multi: false
     serializeFunctions: false
 
+_updateManyOptions = 
+    w: 1
+    journal: true
+    upsert: false
+    multi: true
+    serializeFunctions: false
+
 
 
 #the default instructions are all revision based, so check that we're set up to do this.
@@ -797,6 +804,178 @@ _mongoOpsFromTo = (mongoOps, fromDoc, toDoc) ->
         mongoOps.$unset[path] = 1
     #remove _id from $set, we dont want to update this
     delete mongoOps.$set._id
+
+_updateOpInstruction = (onlyOne, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done) ->
+    instructionName = if onlyOne then 'updateOneOp' else 'updateManyOp'
+    if etc.length isnt 0 then return done(new Error("too many values passed to #{instructionName}"))
+    if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to #{instructionName} instruction"))
+
+    [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
+    #check the revisions param is consistent with any config.revisions settings
+    error = _checkInstructionRevisionConfig instructionName, config, collectionName, revisionNames
+    if error?
+        return done(error)
+    if not onlyOne and revisionNumbers?
+        return done( new Error("can't #{instructionName} with a revisions object that specifies exact revision numbers, that's only possible for singe updates"))
+    #can't proceed if we've already got an $inc updateOps that involves the revisions 
+    if updateOps.__inc? and revisionNames.some((name) -> updateOps.__inc["revision.#{name}"])
+        return done(new Error("can't #{instructionName} with revisions #{revisionNames} when there are already $inc operations on the revision sub-document"))
+    #sames true of the selector if we're going to match an exact version number, this isnt really that precise a check, but it's at least a basic check
+    if revisionNumbers? and revisionNames.some((name) -> selector["revision.#{name}"])
+        return done(new Error("can't #{instructionName} with revisions #{revisionNumbers} with a selector that already matches on the revision subdoc"))
+
+    config.db.collection collectionName, {strict: true}, (err, collection) ->
+        if err? then return done(err, false)
+
+        #irrespective of whether we've been given required revision numbers, we need their current values written into the transaction right away
+        mongoSelector = _mongolize(selector)
+        if rollbackProjector?
+            mongoProjector = _mongolize(rollbackProjector)
+            mongoProjector._id = 1
+            #always get the revision sub-doc - whittle this down to just the revisions of interest during rollback
+            mongoProjector.revision = 1
+        else
+            #if we weren't given a rollback projector then grab the whole document.
+            mongoProjector = {}
+
+        #we're going to read current values into memory, then send it back out
+        #to the transaction collection. this instruction consequently needs to
+        #be used with care, if you need to update a million documents,
+        #consider using a different instruction.
+        collection.find(mongoSelector, mongoProjector).toArray (err, docs) ->
+            if err? then return done(err, null)
+            if onlyOne and docs.length isnt 1 
+                #the instruction has failed, we must find exactly one doc
+                transaction.execution.info.push "#{instructionName} can update only one document, using #{JSON.stringify mongoSelector} #{docs.length} were found"
+                return done(null, false) 
+            #if we have a document to update, we should save its id and exact revision into the transaction
+            if onlyOne
+                state.updated = docs[0]
+            else
+                state.updated = docs
+            _updateTransactionState transaction, (err) ->
+                if err? then return done(err, null)
+                #now we're safe for a rollback 
+
+                executeUpdate = () ->
+                    if onlyOne then options = _updateOneOptions else options = _updateManyOptions
+                    mongoUpdateOps = _mongolize(updateOps)
+                    if revisionNames.length > 0
+                        if not mongoUpdateOps.$inc? then mongoUpdateOps.$inc = {}
+                        mongoUpdateOps.$inc["revision.#{revisionName}"] = 1 for revisionName in revisionNames
+                    #note that we're not using $isolated. This doesn't work
+                    #over shards and committed's queue structure should be
+                    #used to ensure isolation.
+                    collection.update mongoSelector, mongoUpdateOps, options, (err, updated) ->
+                        if err? then return done(err, null)
+                        if onlyOne and updated isnt 1 
+                            transaction.execution.info.push """
+                                #{instructionName} can update only one document, using #{JSON.stringify mongoSelector} #{updated} were updated
+                                """
+                            return done(null, false) #the instruction has failed
+                        if onlyOne
+                            return done(null, true)
+                        else
+                            #if this is an update many then return the number of records updated.
+                            return done(null, true, updated)
+
+                if revisionNumbers? and onlyOne #because we can't specify revision numbers for a multi-update
+                    #then we should check to see if what we just got meets the requirements
+                    matches = ( state.updated.revision[revisionName] is revisionNumber for revisionName, revisionNumber of revisionNumbers )
+                    if not matches.every((x)->x)
+                        #we have failed to meet the required version number
+                        transaction.execution.info.push """
+                            #{instructionName} failed to find documents to match the required revisions. 
+                            Found: #{JSON.stringify state.updated}. 
+                            Required: #{JSON.stringify revisionNumbers}.
+                            """
+                        return done(null, false)
+                    else
+                        #revision requirements met, proceed with update
+                        #change the updateOps to actually make the revision increments
+                        executeUpdate()
+                else
+                    #we can just go for the update
+                    executeUpdate()
+
+
+_updateOpRollback = (onlyOne, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done) ->
+    instructionName = if onlyOne then 'updateOneOpRollback' else 'updateManyOpRollback'
+    if etc.length isnt 0 then return done(new Error("too many values passed to #{instructionName}"))
+    if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to #{instructionName} command"))
+
+    [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
+
+    config.db.collection collectionName, {strict: true}, (err, collection) ->
+        if err? then return done(err, false)
+
+        if not state.updated?
+            #then we never got started on this transaction, so nothing to rollback
+            return done(null, true)
+        else
+            #then we wrote ids and revisions before the update, can we still find these documents?
+            #we could easily have failed in the middle of an updateMany, so check one by one.
+            docs = if onlyOne then [state.updated] else state.updated
+
+            rollbackDoc = (doc, rollbackDone) ->
+                revisionSelector = _id: doc._id
+                for revisionName, revisionNumber of doc.revision
+                    revisionSelector["revision.#{revisionName}"] = revisionNumber
+                collection.count revisionSelector, (err, count) ->
+                    if count is 1
+                        #then we have not made an update, so there's nothing to rollback
+                        return rollbackDone(null, true)
+                    else if count is 0
+                        #then we must have updated, so we must rollback. This
+                        #is true because we wrote our state.updated values
+                        #from a within-queue read.
+                        mongoRollbackOps = $set: {}, $inc: {}, $unset:{}
+                        #only decrement the revision numbers that we specifically asked to increment
+                        mongoRollbackOps.$inc["revision.#{revisionName}"] = -1 for revisionName in revisionNames
+                        #take the projection that was stored and convert it to mongo dot notation
+                        flattened = _mongoFlatten(doc)
+                        #the stored projection could contain too many revision keys, so don't copy these. 
+                        #also don't update _id.
+                        mongoRollbackOps.$set[key] = value for [key, value] in flattened when key.indexOf('revision.') isnt 0
+                        #make a list of fields to unset
+                        #must include any operation that sets a field which wasnt in state.updated; take care of rename
+                        originalDotPaths = ( key for key, value of mongoRollbackOps.$set when key.indexOf('revision.') isnt 0)
+                        settyOperators = ['__inc', '__setOnInsert', '__set', '__addToSet', '__push', '__bit']
+                        updatedDotPaths = []
+                        for op in settyOperators
+                            if updateOps[op]?
+                                updatedDotPaths.push(path) for path of updateOps[op]
+                        unsetDotPaths = ( path for path in updatedDotPaths when path not in originalDotPaths )
+                        #$rename is a special case, it's the rename-to field that we're interested
+                        if updateOps['__rename']?
+                            renamedTo = ( to for from, to of updateOps['__rename'] )
+                            unsetDotPaths.push(to) for to in renamedTo when to not in originalDotPaths
+                        for path in unsetDotPaths
+                            mongoRollbackOps.$unset[path] = 1
+                        #remove _id from $set, we dont want to update this
+                        delete mongoRollbackOps.$set._id
+
+                        #choose just the document that was updated from it's _id
+                        mongoSelector = _id: doc._id
+
+                        return collection.update mongoSelector, mongoRollbackOps, _updateOneOptions, (err, updated) ->
+                            if err? then return rollbackDone(err, false)
+                            if updated isnt 1
+                                transaction.execution.info.push """
+                                    updateOneOpRollback failed to update exactly one document (actually #{updated}) during rollback
+                                    """
+                                return rollbackDone(null, false) #the rollback has failed
+                            return rollbackDone(null, true)
+                    else
+                        #general rollback failure
+                        transaction.execution.info.push """
+                            updateOneOpRollback found too many documents (#{count}) when trying to find out if an updateOneOp had occurred
+                            """
+                        return rollbackDone(null, false)
+            async.mapSeries docs, rollbackDoc, (err, rollbackResults) ->
+                if err? then return done(err, null)
+                #rollback is a success if each individual rollback returns status true.
+                return done(err, rollbackResults.every((x) -> x))
 
 
 # should be possible to do committed.register('db', committed.db) to use these fns
@@ -903,151 +1082,16 @@ exports.db =
     # mongoProjector is used to take a copy of the pre-commit values, if it's null, the whole document will be copied
     # the object must not contain projection operations.
     updateOneOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
-        if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
-        if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to updateOneOp command"))
-
-        [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
-        #check the revisions param is consistent with any config.revisions settings
-        error = _checkInstructionRevisionConfig 'updateOneOp', config, collectionName, revisionNames
-        if error?
-            return done(error)
-        #can't proceed if we've already got an $inc updateOps that involves the revisions 
-        if updateOps.__inc? and revisionNames.some((name) -> updateOps.__inc["revision.#{name}"])
-            return done(new Error("can't updateOneOp with revisions #{revisionNames} when there are already $inc operations on the revision sub-document"))
-        #sames true of the selector if we're going to match an exact version number, this isnt really that precise a check, but it's at least a basic check
-        if revisionNumbers? and revisionNames.some((name) -> selector["revision.#{name}"])
-            return done(new Error("can't updateOneOp with revisions #{revisionNumbers} with a selector that already matches on the revision subdoc"))
-
-        config.db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err, false)
-
-            #irrespective of whether we've been given required revision numbers, we need their current values written into the transaction right away
-            mongoSelector = _mongolize(selector)
-            if rollbackProjector?
-                mongoProjector = _mongolize(rollbackProjector)
-                mongoProjector._id = 1
-                #always get the revision sub-doc - whittle this down to just the revisions of interest during rollback
-                mongoProjector.revision = 1
-            else
-                #if we weren't given a rollback projector then grab the whole document.
-                mongoProjector = {}
-
-            #we're going to read this into memory, it's got to go back out again to the transaction collection. 
-            collection.find(mongoSelector, mongoProjector).toArray (err, docs) ->
-                if err? then return done(err, null)
-                if docs.length isnt 1 
-                    #the instruction has failed, we must find exactly one doc
-                    transaction.execution.info.push "updateOneOp can update only one document, using #{JSON.stringify mongoSelector} #{docs.length} were found"
-                    return done(null, false) 
-                #if we have a document to update, we should save its id and exact revision into the transaction
-                state.updated = docs[0]
-                _updateTransactionState transaction, (err) ->
-                    if err? then return done(err, null)
-                    #now we're safe for a rollback 
-
-                    executeUpdate = () ->
-                        mongoUpdateOps = _mongolize(updateOps)
-                        if revisionNames.length > 0
-                            if not mongoUpdateOps.$inc? then mongoUpdateOps.$inc = {}
-                            mongoUpdateOps.$inc["revision.#{revisionName}"] = 1 for revisionName in revisionNames
-                        collection.update mongoSelector, mongoUpdateOps, _updateOneOptions, (err, updated) ->
-                            if err? then return done(err, null)
-                            if updated isnt 1 
-                                transaction.execution.info.push """
-                                    updateOneOp can update only one document, using #{JSON.stringify mongoSelector} #{updated} were updated
-                                    """
-                                return done(null, false) #the instruction has failed
-                            return done(null, true)
-
-                    if revisionNumbers?
-                        #then we should check to see if what we just got meets the requirements
-                        matches = ( state.updated.revision[revisionName] is revisionNumber for revisionName, revisionNumber of revisionNumbers )
-                        if not matches.every((x)->x)
-                            #we have failed to meet the required version number
-                            transaction.execution.info.push """
-                                updateOneOp failed to find documents to match the required revisions. 
-                                Found: #{JSON.stringify state.updated}. 
-                                Required: #{JSON.stringify revisionNumbers}.
-                                """
-                            return done(null, false)
-                        else
-                            #revision requirements met, proceed with update
-                            #change the updateOps to actually make the revision increments
-                            executeUpdate()
-                    else
-                        #we can just go for the update
-                        executeUpdate()
-
+        return _updateOpInstruction(true, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)
 
     updateOneOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
-        if etc.length isnt 0 then return done(new Error("too many values passed to updateOneOp"))
-        if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to updateOneOp command"))
+        return _updateOpRollback(true, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)
 
-        [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
+    updateManyOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
+        return _updateOpInstruction(false, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)
 
-        config.db.collection collectionName, {strict: true}, (err, collection) ->
-            if err? then return done(err, false)
-
-            if not state.updated?
-                #then we never got started on this transaction, so nothing to rollback
-                return done(null, true)
-            else
-                #then we wrote ids and revisions before the update, can we still find these documents?
-                revisionSelector = _id: state.updated._id
-                for revisionName, revisionNumber of state.updated.revision
-                    revisionSelector["revision.#{revisionName}"] = revisionNumber
-                collection.count revisionSelector, (err, count) ->
-                    if count is 1
-                        #then we have not made an update, so there's nothing to rollback
-                        return done(null, true)
-                    else if count is 0
-                        #then we must have updated, so we must rollback. This
-                        #is true because we wrote our state.updated values
-                        #from a within-queue read.
-                        mongoRollbackOps = $set: {}, $inc: {}, $unset:{}
-                        #only decrement the revision numbers that we specifically asked to increment
-                        mongoRollbackOps.$inc["revision.#{revisionName}"] = -1 for revisionName in revisionNames
-                        #take the projection that was stored and convert it to mongo dot notation
-                        flattened = _mongoFlatten(state.updated)
-                        #the stored projection could contain too many revision keys, so don't copy these. 
-                        #also don't update _id.
-                        mongoRollbackOps.$set[key] = value for [key, value] in flattened when key.indexOf('revision.') isnt 0
-                        #make a list of fields to unset
-                        #must include any operation that sets a field which wasnt in state.updated; take care of rename
-                        originalDotPaths = ( key for key, value of mongoRollbackOps.$set when key.indexOf('revision.') isnt 0)
-                        settyOperators = ['__inc', '__setOnInsert', '__set', '__addToSet', '__push', '__bit']
-                        updatedDotPaths = []
-                        for op in settyOperators
-                            if updateOps[op]?
-                                updatedDotPaths.push(path) for path of updateOps[op]
-                        unsetDotPaths = ( path for path in updatedDotPaths when path not in originalDotPaths )
-                        #$rename is a special case, it's the rename-to field that we're interested
-                        if updateOps['__rename']?
-                            renamedTo = ( to for from, to of updateOps['__rename'] )
-                            unsetDotPaths.push(to) for to in renamedTo when to not in originalDotPaths
-                        for path in unsetDotPaths
-                            mongoRollbackOps.$unset[path] = 1
-                        #remove _id from $set, we dont want to update this
-                        delete mongoRollbackOps.$set._id
-
-                        #choose just the document that was updated from it's _id
-                        mongoSelector = _id: state.updated._id
-
-                        return collection.update mongoSelector, mongoRollbackOps, _updateOneOptions, (err, updated) ->
-                            if err? then return done(err, false)
-                            if updated isnt 1
-                                transaction.execution.info.push """
-                                    updateOneOpRollback failed to update exactly one document (actually #{updated}) during rollback
-                                    """
-                                return done(null, false) #the rollback has failed
-                            return done(null, true)
-                    else
-                        #general rollback failure
-                        transaction.execution.info.push """
-                            updateOneOpRollback found too many documents (#{count}) when trying to find out if an updateOneOp had occurred
-                            """
-                        return done(null, false)
-
+    updateManyOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
+        return _updateOpRollback(false, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)
 
     #updateOneDoc updates a parts of a document. It isnt save, if you want to
     #save the whole document you should use a different instruction.

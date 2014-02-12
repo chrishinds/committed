@@ -38,7 +38,8 @@ before (done) ->
         if err? then done(err)
         else
             _db = db
-            done()
+            _db.createCollection 'transactions', (err, collection) -> 
+                collection.remove {}, {w:1}, done
 
 describe 'Committed', ->
 
@@ -929,7 +930,7 @@ describe 'Committed', ->
                             done()
 
 
-    describe 'chained transactions', ->
+    describe.only 'chained transactions', ->
 
         beforeEach (done) ->
             committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
@@ -1107,6 +1108,34 @@ describe 'Committed', ->
                         committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
                             should.not.exist err
                             done()
+
+        it 'should execute chains which operate within one single queue', (done) ->
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+            )
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                _db.collection 'chainedTest', {strict:true}, (err, collection) ->
+                    should.not.exist err
+                    collection.find({execute: 'all'}).toArray (err, docs) ->
+                        docs.length.should.equal 6
+                        done()
 
     describe 'restart', ->
         
@@ -1444,3 +1473,95 @@ describe 'Committed', ->
                 should.exist err
                 err.message.should.be.string 'my error'
                 done()
+
+
+    describe 'returning results', (done) ->
+        beforeEach (done) ->
+            config = {db:_db, softwareVersion:'testSoftwareVersion', revisions: resultsTest: ['number']}
+            committed.start config, (err) ->
+                should.not.exist err
+                _db.createCollection 'resultsTest', (err, collection) -> 
+                    collection.remove {}, {w:1}, done
+
+        afterEach (done) ->
+            committed.stop done
+
+        it 'should execute an instruction in a single transaction and accumulate the result it yields', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            insert = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['resultsTest', docs]}
+            ]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                ids = ( d._id for d in docs )
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.updateManyOp'
+                        arguments: ['resultsTest', {_id: __in: ids}, {__inc: j: 1} ]
+                    }
+                ]
+                committed.enqueue update, (err, status, updated) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    updated.should.equal 3
+                    done()
+
+        it 'should execute multiple instructions a single transaction and accumulate any results they yield', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            update = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['resultsTest', docs]}
+                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 1}, {__inc: j: 1} ]}
+                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 2}, {__inc: j: 1} ]}
+                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
+            ]
+            committed.enqueue update, (err, status, a, b, c) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                a.should.equal 3
+                b.should.equal 2
+                c.should.equal 1
+                done()
+
+        it 'should execute multiple instructions and a writer and accumulate any results they yield', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            writer = committed.writer "test", (writerDone) ->
+                update = committed.transaction "test", 'user', [
+                    {name: 'db.insert', arguments: ['resultsTest', docs]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 1}, {__inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 2}, {__inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
+                ]
+                writerDone(null, update, 'my writer result')
+            committed.enqueue writer, (err, status, s, a, b, c) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                s.should.be.string 'my writer result'
+                a.should.equal 3
+                b.should.equal 2
+                c.should.equal 1
+                done()
+
+        it 'should execute a chain produced by a writer and accumulate any results', (done) ->
+            docs = ( {i: i} for i in [1,2,3] )
+            writer = committed.writer "test", (writerDone) ->
+                update1 = committed.transaction "test", 'user', [
+                    {name: 'db.insert', arguments: ['resultsTest', docs]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 1}, {__inc: j: 1} ]}
+                ]
+                update2 = committed.transaction "test2", 'user', [
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 2}, {__inc: j: 1} ]}
+                    #this instruction wont return anything
+                    {name: 'db.updateOneOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
+                ]
+                chain = committed.chain [update1, update2]
+                writerDone(null, chain, 'my writer result')
+            committed.enqueue writer, (err, status, s, a, b, c) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                s.should.be.string 'my writer result'
+                a.should.equal 3
+                b.should.equal 2
+                c.should.equal 1
+                done()                

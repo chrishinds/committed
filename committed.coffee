@@ -384,18 +384,21 @@ applyToRegistered = (name, fnArgs) ->
 
 #done(err, result)
 execute = (instructions, state, transaction, done) ->
-    results = []
+    statuses = []
+    allResults = []
     iterator = ([instruction, state], iteratorDone) ->
         #assemble the arguments for the call of one of our registered functions
         args = if instruction.arguments? then instruction.arguments else []
         if not Array.isArray(args) then args = [args]
         fnArgs = [_config, transaction, state, args]
         #add the callback
-        fnArgs.push (err, iteratorResult) ->
+        fnArgs.push (err, status, results...) ->
             #if an instruction has 'failed' by returning false, interrupt the series execution by returning an error
-            if not err? and iteratorResult is false
+            if not err? and status is false
                 err = 'instructionFailed'
-            results.push iteratorResult
+            statuses.push status
+            if results?
+                allResults.push(result) for result in results
             return iteratorDone(err)
         #call the instruction's function
         applyToRegistered instruction.name, fnArgs
@@ -404,7 +407,7 @@ execute = (instructions, state, transaction, done) ->
     async.eachSeries instructionsWithState, iterator, (err) ->
         #we may have terminated series by returning 'instructionFailed', however, it's necesary to separate failure from error
         if err is 'instructionFailed' then err = null
-        return done(err, results)
+        return done(err, statuses, allResults)
 
 
 _pushTransactionError = (transaction, error, optional..., done) ->
@@ -470,7 +473,7 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, optional..., done
                     return done(null)
 
 _updateTransactionState = (transaction, done) ->
-    _transactionsCollection.update { _id: transaction._id }, {$set: 'executions.state': transaction.execution.state}, _updateOneOptions, (err,updated) ->
+    _transactionsCollection.update { _id: transaction._id }, {$set: 'execution.state': transaction.execution.state}, _updateOneOptions, (err,updated) ->
         if not err? and updated isnt 1 then err = new Error("transaction not correctly updated with instruction state before insert")
         done(err)
 
@@ -600,14 +603,21 @@ _shiftChain = (transaction) ->
 
 #worker function for regular queues; manages transaction chains, delegates
 #commit of the individual transaction to _commitCore
-commit = (transactionOrFunction, done, retries=2) ->
+commit = (transactionOrFunction, done, retries=2, chainResults) ->
     #this function will do the work of committing, but first we need to work
     #out whether we've been given a transaction or a function
-    doCommit = (transaction) -> 
-        _commitCore transaction, (err, status) ->
+    doCommit = (transaction, functionResults) -> 
+        _commitCore transaction, (err, status, transactionResults) ->
+            #reconcile results from the various possible codepaths into one list
+            chainResults ?= []
+            if functionResults?
+                chainResults.push(result) for result in functionResults
+            if transactionResults?
+                chainResults.push(result) for result in transactionResults
+
             if not (_hasBefore(transaction) or _hasAfter(transaction))
                 #then this transaction isnt a chain, so callback directly
-                return done(err, status)
+                return done(err, status, chainResults...)
             else 
                 #this transaction is a chain
                 switch status
@@ -615,13 +625,22 @@ commit = (transactionOrFunction, done, retries=2) ->
                         if _hasAfter(transaction)
                             #then there are transaction yet to execute, we should move onto the next item in the chain
                             _shiftChain(transaction)
-                            return _requeue(transaction, done)
+                            #yield to event loop before..............................................
+                            return _requeue transaction, (err, status, results...) ->
+                                #if we have to requeue, then use this special
+                                #done wrapper which will append it's results
+                                #onto those already accumulated into
+                                #chainResults
+                                if results?
+                                    chainResults.push(result) for result in results
+                                return done(err, status, chainResults...)
+                            
                         else
-                            return done(err, status)
+                            return done(err, status, chainResults...)
                     when 'Failed', 'FailedCommitErrorRollbackOk'
                         if not _hasBefore(transaction)
                             #then we are the first in the chain, so simply callback and let the client retry if they wish
-                            return done(err, status)
+                            return done(err, status, chainResults...)
                         else
                             #we are not the chain's first transaction, so retry may be worthwhile; wait about a second
                             if retries > 0 
@@ -629,7 +648,7 @@ commit = (transactionOrFunction, done, retries=2) ->
                                     () -> 
                                         _updateTransactionStatus transaction, transaction.status, 'Queued', null, null, "#{status} #{retries} retries remaining", (statusErr) ->
                                             if statusErr? then return done(statusErr, transaction.status)
-                                            commit(transaction, done, retries-1)
+                                            commit(transaction, done, retries-1, chainResults)
                                     , 500 + Math.floor(1000*Math.random())
                                 )
                                 return null
@@ -640,18 +659,18 @@ commit = (transactionOrFunction, done, retries=2) ->
                                 #failed. keep the original status on the
                                 #execution.info array
                                     return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
-                                        if statusErr? then return done(statusErr, transaction.status)
-                                        return done(err, 'ChainFailed')
+                                        if statusErr? then return done(statusErr, transaction.status, chainResults...)
+                                        return done(err, 'ChainFailed', chainResults...)
                     else
                         #there's been a catastrophe retry is not appropriate
                         if not _hasBefore(transaction)
                             #then we're the first transaction in the chain, return directly
-                            return done(err, status)
+                            return done(err, status, chainResults...)
                         else
                             #we're not the first transaction, so keep the failing status in execution.info and return 'ChainFailed'
                             return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
-                                if statusErr? then return done(statusErr, transaction.status)
-                                return done(err, 'ChainFailed')
+                                if statusErr? then return done(statusErr, transaction.status, chainResults...)
+                                return done(err, 'ChainFailed', chainResults...)
 
     #but first, deal with the possibility that we've been given a function rather than a transaction object
     if typeof(transactionOrFunction) is 'function'
@@ -662,11 +681,11 @@ commit = (transactionOrFunction, done, retries=2) ->
                 done(errAndResults...)
         if transactionOrFunction.fnType is 'writer'
             #if its a writer function then we should look at what the callback returns 
-            return transactionOrFunction (err, transactionOrString) ->
+            return transactionOrFunction (err, transactionOrString, results...) ->
                 #a writer function may either return a transaction, a chain, or a string
                 if (typeof(transactionOrString) is 'string' or transactionOrString instanceof String or not transactionOrString?)
                     #if a string is returned then this should be the overall status of the transaction
-                    return done(err, transactionOrString)
+                    return done(err, transactionOrString, results...)
                 else
                     #we have been given a transaction or chain as a result of calling our function.
                     if Array.isArray(transactionOrString)
@@ -699,7 +718,7 @@ commit = (transactionOrFunction, done, retries=2) ->
                         transaction.before = transactionOrFunction.before
                         transaction.after = transactionOrFunction.after
                     #if everything still looks good then do the commit.
-                    return doCommit(transaction)
+                    return doCommit(transaction, results)
     else 
         #we must have been given a transaction object
         return doCommit(transactionOrFunction)
@@ -730,20 +749,21 @@ _commitCore = (transaction, done) ->
             if not err? and changed isnt 1 then err = new Error("upsert transaction must effect exactly one document")
             if err? then return done(err, null)
             #transaction has been written to the db, we're ready to execute instructions
-            execute transaction.instructions, transaction.execution.state, transaction, (err, results) ->
+            execute transaction.instructions, transaction.execution.state, transaction, (err, statuses, results) ->
                 if err?
-                    return _pushTransactionError transaction, err, results, () ->
+                    return _pushTransactionError transaction, err, statuses, () ->
                         #if there's been an error in execution then we need to rollback everything
                         return rollback transaction, done
-                else if results.length is transaction.instructions.length and results.every( (x) -> x )
+                else if statuses.length is transaction.instructions.length and statuses.every( (x) -> x )
                     #then the transaction has succeeded.
-                    return _updateTransactionStatus transaction, 'Processing', 'Committed', results, (err) ->
-                        if err?
-                            _transactionsCollection.findOne {_id:transaction._id}, (err, doc) ->
-                        return done(err, 'Committed')
+                    return _updateTransactionStatus transaction, 'Processing', 'Committed', statuses, (err) ->
+                        # don't understand what these lines are for....
+                        # if err?
+                        #     _transactionsCollection.findOne {_id:transaction._id}, (err, doc) ->
+                        return done(err, 'Committed', results)
                 else
-                    #the transaction has (legitimately) failed, write the results, and prepare for rollback 
-                    _updateTransactionStatus transaction, transaction.status, transaction.status, results, null, "legitimate transaction failure", (statusErr) ->
+                    #the transaction has (legitimately) failed, write the statuses, and prepare for rollback 
+                    _updateTransactionStatus transaction, transaction.status, transaction.status, statuses, null, "legitimate transaction failure", (statusErr) ->
                         #log these errors but don't pass them up
                         if err? then console.error "error saving transaction status change on legitimate failure: #{err}"
                         return rollback transaction, done
@@ -765,17 +785,10 @@ _updateManyOptions =
 
 
 
-#the default instructions are all revision based, so check that we're set up to do this.
-_checkInstructionRevisionConfig = (instructionName, config, collectionName, revisionNames) ->
+_processRevisions = (instructionName, config, collectionName, revisions) ->
     #are the parameters consistent with the config?
     if not config.revisions? or not config.revisions[collectionName]?
-        return new Error("can't #{instructionName} documents in #{collectionName} without relevant config.revisions supplied at committed.start")
-    for revisionName in revisionNames
-        if revisionName not in config.revisions[collectionName]
-            return new Error("can't #{instructionName} documents with a revision '#{revisionName}' not specified in the config.revisions given at committed.start")
-    return null
-
-_processUpdateRevisions = (config, collectionName, revisions) ->
+        return [new Error("can't #{instructionName} documents in #{collectionName} without relevant config.revisions supplied at committed.start")]
     #revisions can be null, string, array, or object
     #if revisions is null, then grab all the revisions from config and use these
     if not revisions? then revisions = config.revisions[collectionName]
@@ -789,7 +802,11 @@ _processUpdateRevisions = (config, collectionName, revisions) ->
         #if we were given an object with exact revision numbers, make a names list, and return both
         revisionNames = ( key for key of revisions )
         revisionNumbers = revisions
-    return [revisionNames, revisionNumbers]
+    #now check the config is consistent with the revision names
+    for revisionName in revisionNames
+        if revisionName not in config.revisions[collectionName]
+            return [new Error("can't #{instructionName} documents with a revision '#{revisionName}' not specified in the config.revisions given at committed.start")]
+    return [null, revisionNames, revisionNumbers]
 
 _mongoOpsFromTo = (mongoOps, fromDoc, toDoc) ->
     toFlattened = _mongoFlatten(toDoc)
@@ -810,11 +827,10 @@ _updateOpInstruction = (onlyOne, config, transaction, state, collectionName, sel
     if etc.length isnt 0 then return done(new Error("too many values passed to #{instructionName}"))
     if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to #{instructionName} instruction"))
 
-    [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
-    #check the revisions param is consistent with any config.revisions settings
-    error = _checkInstructionRevisionConfig instructionName, config, collectionName, revisionNames
+    [error, revisionNames, revisionNumbers] = _processRevisions instructionName, config, collectionName, revisions
     if error?
         return done(error)
+
     if not onlyOne and revisionNumbers?
         return done( new Error("can't #{instructionName} with a revisions object that specifies exact revision numbers, that's only possible for singe updates"))
     #can't proceed if we've already got an $inc updateOps that involves the revisions 
@@ -904,7 +920,11 @@ _updateOpRollback = (onlyOne, config, transaction, state, collectionName, select
     if etc.length isnt 0 then return done(new Error("too many values passed to #{instructionName}"))
     if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to #{instructionName} command"))
 
-    [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
+    console.log JSON.stringify(transaction, null, 2), revisions, 'foo'
+
+    [error, revisionNames, revisionNumbers] = _processRevisions instructionName, config, collectionName, revisions
+    if error?
+        return done(error)
 
     config.db.collection collectionName, {strict: true}, (err, collection) ->
         if err? then return done(err, false)
@@ -1009,16 +1029,14 @@ exports.db =
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insert command"))
         if not Array.isArray(documents) then documents = [documents]
 
-        [revisionNames, revisionNumbers] = _processUpdateRevisions config, collectionName, revisions
-        error = _checkInstructionRevisionConfig 'insert', config, collectionName, revisionNames
+        [error, revisionNames, revisionNumbers] = _processRevisions 'insert', config, collectionName, revisions
         if error?
             return done(error)
+        if revisionNumbers? then return done(new Error("can't insert using specific revision numbers #{revisionNumbers}"))
 
-        if not revisions? then revisions = config.revisions[collectionName]
-        #check the revisions param is consistent with any config.revisions settings
         #check the docs dont have any revision info if we're intending to automatically set revision info
-        if revisions.length > 0 and documents.some((d) -> d.revision?)
-            return done(new Error("can't insert documents with revisions #{revisions} when some of the supplied documents already have a revision property"))
+        if documents.some((d) -> d.revision?)
+            return done(new Error("can't insert documents when some already have a revision property"))
 
         config.db.collection collectionName, {strict: true}, (err, collection) ->
             if err? then return done(err, false)
@@ -1031,9 +1049,9 @@ exports.db =
                     d._id = _pkFactory.createPk()
                     state.ids.push d._id
                 #while we're looking at documents, check to see if we should create some revision info
-                if revisions.length > 0 and not d.revision?
+                if revisionNames.length > 0 and not d.revision?
                     d.revision = {}
-                    for revisionName in revisions
+                    for revisionName in revisionNames
                         d.revision[revisionName] = 0
             options =
                 w:1
@@ -1105,7 +1123,8 @@ exports.db =
 
         #take the revision sub-doc of the old partial doc to be the revisions that we're interested in
         revisionNames = ( revisionName for revisionName of oldPartialDocument.revision )
-        error = _checkInstructionRevisionConfig 'updateOneDoc', config, collectionName, revisionNames
+
+        [error, x, y] = _processRevisions 'updateOneDoc', config, collectionName, revisionNames
         if error?
             return done(error)
 

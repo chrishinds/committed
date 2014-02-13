@@ -230,33 +230,27 @@
       return done(new Error("committed is not currently started"));
     }
     return setImmediate(function() {
-      var name;
       _state = 'stopped';
-      return _drainQueues((function() {
-        var _results;
-        _results = [];
-        for (name in _queues) {
-          _results.push(name);
-        }
-        return _results;
-      })(), done);
+      return _drainQueues([], done);
     });
   };
 
-  _drainQueues = function(queues, done) {
+  _drainQueues = function(exceptQueues, done) {
     return async.until(function() {
-      var name;
+      var count, name;
       return ((function() {
-        var _i, _len, _results;
+        var _results;
         _results = [];
-        for (_i = 0, _len = queues.length; _i < _len; _i++) {
-          name = queues[_i];
-          _results.push(_queueLength[name] === 0 || (_queueLength[name] == null));
+        for (name in _queueLength) {
+          count = _queueLength[name];
+          if (__indexOf.call(exceptQueues, name) < 0) {
+            _results.push(count === 0);
+          }
         }
         return _results;
       })()).every(function(x) {
         return x;
-      }) && _immediateCounter === 0 && _chainCounter === 0;
+      }) && _immediateCounter === 0;
     }, function(untilBodyDone) {
       return setTimeout(untilBodyDone, 10);
     }, function(err) {
@@ -303,23 +297,35 @@
   };
 
   _enqueueAndHandleChains = function(transaction, done) {
-    var isChain, lastStatus, results;
+    var chainGuard, decrementQueueCounter, isChain, lastStatus, results;
     isChain = ((transaction != null ? transaction.after : void 0) != null) && ((transaction != null ? transaction.before : void 0) != null);
     results = [];
     lastStatus = null;
-    if (isChain) {
-      _chainCounter += 1;
-    }
+    chainGuard = null;
+    decrementQueueCounter = function(queueName) {
+      if (_queueLength[queueName] != null) {
+        _queueLength[queueName] -= 1;
+        if (_queueLength[queueName] === 0) {
+          return delete _queueLength[queueName];
+        }
+      }
+    };
     return async.doWhilst(function(bodyDone) {
+      var _name;
       if (_queues[transaction.queue] == null) {
         _queues[transaction.queue] = async.queue(commit, 1);
-        _queueLength[transaction.queue] = 0;
         _queues[transaction.queue].drain = function() {
-          delete _queues[transaction.queue];
-          return delete _queueLength[transaction.queue];
+          return delete _queues[transaction.queue];
         };
       }
+      if (_queueLength[_name = transaction.queue] == null) {
+        _queueLength[_name] = 0;
+      }
       _queueLength[transaction.queue] += 1;
+      if (chainGuard != null) {
+        decrementQueueCounter(chainGuard);
+        chainGuard = null;
+      }
       return _queues[transaction.queue].push(transaction, function() {
         var err, newResults, newTransaction, originalTransaction, result, status, _i, _len;
         err = arguments[0], newTransaction = arguments[1], status = arguments[2], newResults = 4 <= arguments.length ? __slice.call(arguments, 3) : [];
@@ -327,12 +333,11 @@
         if (transaction.fnType === 'writer') {
           transaction = newTransaction;
           isChain = ((transaction != null ? transaction.after : void 0) != null) && ((transaction != null ? transaction.before : void 0) != null);
-          if (isChain) {
-            _chainCounter += 1;
-          }
         }
-        if (_queueLength[originalTransaction.queue] != null) {
-          _queueLength[originalTransaction.queue] -= 1;
+        if (!isChain) {
+          decrementQueueCounter(originalTransaction.queue);
+        } else {
+          chainGuard = originalTransaction.queue;
         }
         for (_i = 0, _len = newResults.length; _i < _len; _i++) {
           result = newResults[_i];
@@ -362,8 +367,9 @@
         return false;
       }
     }, function(err) {
-      if (isChain) {
-        _chainCounter -= 1;
+      if (chainGuard != null) {
+        decrementQueueCounter(chainGuard);
+        chainGuard = null;
       }
       if (err != null) {
         return done.apply(null, [err, lastStatus].concat(__slice.call(results)));
@@ -856,17 +862,7 @@
   };
 
   commitWithGlobalLock = function(transaction, done) {
-    var name;
-    return _drainQueues((function() {
-      var _results;
-      _results = [];
-      for (name in _queues) {
-        if (name !== 'GlobalLock') {
-          _results.push(name);
-        }
-      }
-      return _results;
-    })(), function(err) {
+    return _drainQueues(['GlobalLock'], function(err) {
       if (err != null) {
         return done(err, null);
       }

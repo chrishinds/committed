@@ -1,14 +1,9 @@
 Todo
 ====
 
-have removed the chain retry functionality.
-
-need a test to demonstrate non-blocking nature of chains and repeated queue insert
-
 Now
 ---
 
-- bug: chains with transactions in the same queue fail
 - fill in pending instruction tests
 
 Soon

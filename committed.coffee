@@ -176,14 +176,14 @@ exports.stop = (done) ->
     setImmediate () ->
         _state = 'stopped'
         #drain every queue we have available (even the GlobalLock)
-        _drainQueues ( name for name of _queues ), done
+        _drainQueues [], done
 
 
-_drainQueues = (queues, done) ->
+_drainQueues = (exceptQueues, done) ->
     # wait until every _queue's _queueLength is 0, and there are no immediate transactions in progress, check every 10ms
     async.until(
         () ->
-            (_queueLength[name] is 0 or not _queueLength[name]? for name in queues).every((x) -> x) and _immediateCounter is 0 and _chainCounter is 0
+            ( count is 0 for name, count of _queueLength when name not in exceptQueues).every((x) -> x) and _immediateCounter is 0 
         , (untilBodyDone) ->
             setTimeout untilBodyDone, 10
         , (err) ->
@@ -223,36 +223,47 @@ _enqueueAndHandleChains = (transaction, done) ->
     isChain = transaction?.after? and transaction?.before?
     results = []
     lastStatus = null
-    #there's a problem with using queueLengths as a general execution guard
-    #when chains are involved, hence we'll add an additional chain guard
-    if isChain
-        _chainCounter += 1
+    chainGuard = null
+    decrementQueueCounter = (queueName) ->
+        if _queueLength[queueName]? 
+            _queueLength[queueName] -= 1
+            if _queueLength[queueName] is 0 
+                delete _queueLength[queueName] #free the memory
+
     async.doWhilst(
         (bodyDone) ->
             #enqueue the transaction, if the right queue doesn't exist, create it first
             if not _queues[transaction.queue]?
                 #the commit fn will be the queue worker; only one worker per queue for sequentiality
                 _queues[transaction.queue] = async.queue(commit, 1)
-                _queueLength[transaction.queue] = 0
                 #when the queue's empty, free up memory
                 _queues[transaction.queue].drain = () ->
                     delete _queues[transaction.queue]
-                    delete _queueLength[transaction.queue]
+                    # delete _queueLength[transaction.queue]   DO THIS ELSEWHERE
+            _queueLength[transaction.queue] ?= 0
             #we're about to add an item to the queue, so increment the queue count
             _queueLength[transaction.queue] += 1
-            _queues[transaction.queue].push transaction, (err, newTransaction, status, newResults...) ->
-                
+            if chainGuard?
+                #then decrement a stretched queue counter
+                decrementQueueCounter(chainGuard)
+                chainGuard = null
+            return _queues[transaction.queue].push transaction, (err, newTransaction, status, newResults...) ->
                 originalTransaction = transaction
 
                 if transaction.fnType is 'writer'
                     #then we may have produced a new transaction object
                     transaction = newTransaction
-                    #reevaluate isChain
+                    #so re-evaluate isChain
                     isChain = transaction?.after? and transaction?.before?
-                    if isChain then _chainCounter += 1
 
-                #execution of this transaction is now finished, first revise the queue counter
-                if _queueLength[originalTransaction.queue]? then _queueLength[originalTransaction.queue] -= 1
+                #execution of this transaction is now finished, if the
+                #transaction isnt a chain then its safe to revise the queue
+                #counter
+                if not isChain
+                    decrementQueueCounter(originalTransaction.queue)
+                else
+                    #we need to stretch the queue counter's protection until after we start executing the next transaction
+                    chainGuard = originalTransaction.queue
                 #accumulate any results from the transaction
                 results.push(result) for result in newResults
                 #remember the status 
@@ -285,12 +296,10 @@ _enqueueAndHandleChains = (transaction, done) ->
                 #we just executed a single transaction, so
                 return false #to exit the loop and return the outcome
         , (err) ->
-
-            #examine if we had a reader function, as the callback is different.
-
-            if isChain
-                #then remove the special chain guard
-                _chainCounter -= 1
+            if chainGuard?
+                #tidy this up if we've just completed the last transaction in a chain
+                decrementQueueCounter(chainGuard)
+                chainGuard = null
 
             if err? 
                 return done err, lastStatus, results...
@@ -645,7 +654,7 @@ rollback = (transaction, done) ->
 
 #worker function for the GlobalLock queue
 commitWithGlobalLock = (transaction, done) ->
-    return _drainQueues ( name for name of _queues when name isnt 'GlobalLock' ), (err) ->
+    return _drainQueues ['GlobalLock'], (err) ->
         if err? then return done(err, null)
         commit(transaction, done)
 

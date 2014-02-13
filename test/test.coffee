@@ -930,7 +930,7 @@ describe 'Committed', ->
                             done()
 
 
-    describe.only 'chained transactions', ->
+    describe 'chained transactions', ->
 
         beforeEach (done) ->
             committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->

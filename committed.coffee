@@ -6,6 +6,7 @@ BuiltInObjects = [ Array, Boolean, Date, Number, String, RegExp ]
 _state = 'stopped'
 _queueLength = {}
 _immediateCounter = 0
+_chainCounter = 0
 _queues = null
 _db = null
 _registry = {}
@@ -77,7 +78,7 @@ exports.start = (config, done) ->
         #insert pending transaction into their queues
         while _pending.length isnt 0
             [transaction, done] = _pending.shift()
-            _enqueueOrCreateAndEnqueue(transaction.queue, transaction, done)
+            _enqueueAndHandleChains(transaction, done)
         #execute any pending immediates in parallel
         while _pendingImmediate.length isnt 0
             [transaction, done] = _pendingImmediate.shift()
@@ -149,7 +150,7 @@ exports.start = (config, done) ->
         _inSeries(
             _transactionsCollection.find({status: 'Queued'}, {sort: position: 1})
             , (transaction, transactionDone) ->
-                commit transaction, (err, result) ->
+                _enqueueAndHandleChains transaction, (err, status, results...) ->
                     #eat any error so we continue
                     if err? then console.error err.name, err.message, err.stack, JSON.stringify(transaction, null, 2)
                     transactionDone()
@@ -182,7 +183,7 @@ _drainQueues = (queues, done) ->
     # wait until every _queue's _queueLength is 0, and there are no immediate transactions in progress, check every 10ms
     async.until(
         () ->
-            (_queueLength[name] is 0 or not _queueLength[name]? for name in queues).every((x) -> x) and _immediateCounter is 0
+            (_queueLength[name] is 0 or not _queueLength[name]? for name in queues).every((x) -> x) and _immediateCounter is 0 and _chainCounter is 0
         , (untilBodyDone) ->
             setTimeout untilBodyDone, 10
         , (err) ->
@@ -218,21 +219,79 @@ _queuePosition = (queueName, done) ->
             done(null, doc.nextPosition ? 0)
     )
 
+_enqueueAndHandleChains = (transaction, done) ->
+    isChain = transaction.after? and transaction.before?
+    results = []
+    lastStatus = null
+    #there's a problem with using queueLengths as a general execution guard
+    #when chains are involved, hence we'll add an additional chain guard
+    if isChain
+        _chainCounter += 1
+    async.doWhilst(
+        (bodyDone) ->
+            #enqueue the transaction, if the right queue doesn't exist, create it first
+            if not _queues[transaction.queue]?
+                #the commit fn will be the queue worker; only one worker per queue for sequentiality
+                _queues[transaction.queue] = async.queue(commit, 1)
+                _queueLength[transaction.queue] = 0
+                #when the queue's empty, free up memory
+                _queues[transaction.queue].drain = () ->
+                    delete _queues[transaction.queue]
+                    delete _queueLength[transaction.queue]
+            #we're about to add an item to the queue, so increment the queue count
+            _queueLength[transaction.queue] += 1
+            _queues[transaction.queue].push transaction, (err, status, transactionResults...) ->
+                #execution of this transaction is now finished, first revise the queue counter
+                if _queueLength[transaction.queue]? then _queueLength[transaction.queue] -= 1
+                #accumulate any results from the transaction
+                results.push(result) for result in transactionResults
+                #remember the status 
+                lastStatus = status
+                #yield to the event-loop to let any drain run, then see if we need to repeat 
+                setImmediate bodyDone, err
+        , () ->
+            #this is the loop guard. we need to check whether the transaction
+            #we just executed is a chain or not, if it is we should prepare
+            #for another iteration of the enqueue loop body
+            if isChain
+                #then we have a chain, handle it
+                if lastStatus is 'Committed'
+                    if _hasAfter(transaction)
+                        #then there are transaction yet to execute, we should move onto the next item in the chain
+                        _shiftChain(transaction)
+                        return true
+                    else
+                        #we are done with this chain, just return what we've got
+                        return false 
+                else
+                    if not _hasBefore(transaction)
+                        #then we are the first in the chain, so simply callback and let the client retry if they wish
+                        return false
+                    else
+                        #we are not the chain's first transaction, so set the status to ChainFailed and return
+                        lastStatus = 'ChainFailed'
+                        return false
+            else
+                #we just executed a single transaction, so
+                return false #to exit the loop and return the outcome
+        , (err) ->
+            if isChain
+                #then remove the special chain guard
+                _chainCounter -= 1
+            if err? 
+                return done err, lastStatus, results...
+            else if lastStatus is 'ChainFailed'
+                #then we need to save this status and keep the real failure
+                #status in transaction.execution.info. (we couldn't have done
+                #this in the synchronous loop guard)
+                return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
+                    if statusErr? then return done statusErr, transaction.status, results...
+                    return done err, 'ChainFailed', results...
+            else
+                #we simply return what we've got
+                return done err, lastStatus, results...
+        )
 
-_enqueueOrCreateAndEnqueue = (queueName, transaction, done) ->
-    if not _queues[queueName]?
-        #the commit fn will be the queue worker; only one worker per queue for sequentiality
-        _queues[queueName] = async.queue(commit, 1)
-        _queueLength[queueName] = 0
-        #when the queue's empty, free up memory
-        _queues[queueName].drain = () ->
-            delete _queues[queueName]
-            delete _queueLength[queueName]
-    #we're about to add an item to the queue, so increment the queue count
-    _queueLength[queueName] += 1
-    _queues[queueName].push transaction, (etc...) ->
-        if _queueLength[queueName]? then _queueLength[queueName] -= 1
-        done(etc...)
 
 _checkTransaction = (transaction) ->
     if transaction.status? and transaction.status isnt 'Queued'
@@ -287,7 +346,7 @@ _enqueue = (transaction, done) ->
     transaction.status = 'Queued'
     #important not to involve 'stopped' or 'started' in this conditional
     if _state isnt 'locked'
-        return _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
+        return _enqueueAndHandleChains transaction, done
     else
         _pending.push [transaction, done]
 
@@ -342,7 +401,7 @@ _withGlobalLock = (transaction, done) ->
     error = _checkTransaction(transaction)
     if error? then return done( error, null ) 
     transaction.enqueuedAt = new Date()
-    return _enqueueOrCreateAndEnqueue transaction.queue, transaction, done
+    return _enqueueAndHandleChains transaction, done
 
 
 
@@ -603,76 +662,8 @@ _shiftChain = (transaction) ->
 
 #worker function for regular queues; manages transaction chains, delegates
 #commit of the individual transaction to _commitCore
-commit = (transactionOrFunction, done, retries=2, chainResults) ->
-    #this function will do the work of committing, but first we need to work
-    #out whether we've been given a transaction or a function
-    doCommit = (transaction, functionResults) -> 
-        _commitCore transaction, (err, status, transactionResults) ->
-            #reconcile results from the various possible codepaths into one list
-            chainResults ?= []
-            if functionResults?
-                chainResults.push(result) for result in functionResults
-            if transactionResults?
-                chainResults.push(result) for result in transactionResults
-
-            if not (_hasBefore(transaction) or _hasAfter(transaction))
-                #then this transaction isnt a chain, so callback directly
-                return done(err, status, chainResults...)
-            else 
-                #this transaction is a chain
-                switch status
-                    when 'Committed'
-                        if _hasAfter(transaction)
-                            #then there are transaction yet to execute, we should move onto the next item in the chain
-                            _shiftChain(transaction)
-                            #yield to event loop before..............................................
-                            return _requeue transaction, (err, status, results...) ->
-                                #if we have to requeue, then use this special
-                                #done wrapper which will append it's results
-                                #onto those already accumulated into
-                                #chainResults
-                                if results?
-                                    chainResults.push(result) for result in results
-                                return done(err, status, chainResults...)
-                            
-                        else
-                            return done(err, status, chainResults...)
-                    when 'Failed', 'FailedCommitErrorRollbackOk'
-                        if not _hasBefore(transaction)
-                            #then we are the first in the chain, so simply callback and let the client retry if they wish
-                            return done(err, status, chainResults...)
-                        else
-                            #we are not the chain's first transaction, so retry may be worthwhile; wait about a second
-                            if retries > 0 
-                                setTimeout( 
-                                    () -> 
-                                        _updateTransactionStatus transaction, transaction.status, 'Queued', null, null, "#{status} #{retries} retries remaining", (statusErr) ->
-                                            if statusErr? then return done(statusErr, transaction.status)
-                                            commit(transaction, done, retries-1, chainResults)
-                                    , 500 + Math.floor(1000*Math.random())
-                                )
-                                return null
-                            else
-                                #we have run out of retries, change the status to
-                                #'ChainFailed' so that the client knows that their
-                                #first transaction Committed, but a subsequent one
-                                #failed. keep the original status on the
-                                #execution.info array
-                                    return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
-                                        if statusErr? then return done(statusErr, transaction.status, chainResults...)
-                                        return done(err, 'ChainFailed', chainResults...)
-                    else
-                        #there's been a catastrophe retry is not appropriate
-                        if not _hasBefore(transaction)
-                            #then we're the first transaction in the chain, return directly
-                            return done(err, status, chainResults...)
-                        else
-                            #we're not the first transaction, so keep the failing status in execution.info and return 'ChainFailed'
-                            return _updateTransactionStatus transaction, transaction.status, 'ChainFailed', null, null, transaction.status, (statusErr) ->
-                                if statusErr? then return done(statusErr, transaction.status, chainResults...)
-                                return done(err, 'ChainFailed', chainResults...)
-
-    #but first, deal with the possibility that we've been given a function rather than a transaction object
+commit = (transactionOrFunction, done) ->
+    #first, deal with the possibility that we've been given a function rather than a transaction object
     if typeof(transactionOrFunction) is 'function'
         #work out whether its a reader or a writer function
         if transactionOrFunction.fnType is 'reader'
@@ -718,15 +709,15 @@ commit = (transactionOrFunction, done, retries=2, chainResults) ->
                         transaction.before = transactionOrFunction.before
                         transaction.after = transactionOrFunction.after
                     #if everything still looks good then do the commit.
-                    return doCommit(transaction, results)
+                    return _commitCore transaction, results..., done
     else 
         #we must have been given a transaction object
-        return doCommit(transactionOrFunction)
+        return _commitCore transactionOrFunction, done
  
 
 
 #commits a single transaction
-_commitCore = (transaction, done) ->
+_commitCore = (transaction, writerResults..., done) ->
     #is this transaction at queued status?
     if transaction.status isnt 'Queued'
         return done( new Error("can't begin work on a transaction which isn't at 'Queued' status (#{transaction.status})"), null )
@@ -749,7 +740,7 @@ _commitCore = (transaction, done) ->
             if not err? and changed isnt 1 then err = new Error("upsert transaction must effect exactly one document")
             if err? then return done(err, null)
             #transaction has been written to the db, we're ready to execute instructions
-            execute transaction.instructions, transaction.execution.state, transaction, (err, statuses, results) ->
+            execute transaction.instructions, transaction.execution.state, transaction, (err, statuses, transactionResults) ->
                 if err?
                     return _pushTransactionError transaction, err, statuses, () ->
                         #if there's been an error in execution then we need to rollback everything
@@ -760,7 +751,8 @@ _commitCore = (transaction, done) ->
                         # don't understand what these lines are for....
                         # if err?
                         #     _transactionsCollection.findOne {_id:transaction._id}, (err, doc) ->
-                        return done(err, 'Committed', results)
+                        writerResults.push(result) for result in transactionResults
+                        return done(err, 'Committed', writerResults...)
                 else
                     #the transaction has (legitimately) failed, write the statuses, and prepare for rollback 
                     _updateTransactionStatus transaction, transaction.status, transaction.status, statuses, null, "legitimate transaction failure", (statusErr) ->
@@ -919,8 +911,6 @@ _updateOpRollback = (onlyOne, config, transaction, state, collectionName, select
     instructionName = if onlyOne then 'updateOneOpRollback' else 'updateManyOpRollback'
     if etc.length isnt 0 then return done(new Error("too many values passed to #{instructionName}"))
     if not (collectionName? and selector? and updateOps?) then return done(new Error("null or missing argument to #{instructionName} command"))
-
-    console.log JSON.stringify(transaction, null, 2), revisions, 'foo'
 
     [error, revisionNames, revisionNumbers] = _processRevisions instructionName, config, collectionName, revisions
     if error?

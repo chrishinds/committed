@@ -1,6 +1,10 @@
 Todo
 ====
 
+have removed the chain retry functionality.
+
+need a test to demonstrate non-blocking nature of chains and repeated queue insert
+
 Now
 ---
 

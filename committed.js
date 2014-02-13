@@ -304,7 +304,7 @@
 
   _enqueueAndHandleChains = function(transaction, done) {
     var isChain, lastStatus, results;
-    isChain = (transaction.after != null) && (transaction.before != null);
+    isChain = ((transaction != null ? transaction.after : void 0) != null) && ((transaction != null ? transaction.before : void 0) != null);
     results = [];
     lastStatus = null;
     if (isChain) {
@@ -321,13 +321,21 @@
       }
       _queueLength[transaction.queue] += 1;
       return _queues[transaction.queue].push(transaction, function() {
-        var err, result, status, transactionResults, _i, _len;
-        err = arguments[0], status = arguments[1], transactionResults = 3 <= arguments.length ? __slice.call(arguments, 2) : [];
-        if (_queueLength[transaction.queue] != null) {
-          _queueLength[transaction.queue] -= 1;
+        var err, newResults, newTransaction, originalTransaction, result, status, _i, _len;
+        err = arguments[0], newTransaction = arguments[1], status = arguments[2], newResults = 4 <= arguments.length ? __slice.call(arguments, 3) : [];
+        originalTransaction = transaction;
+        if (transaction.fnType === 'writer') {
+          transaction = newTransaction;
+          isChain = ((transaction != null ? transaction.after : void 0) != null) && ((transaction != null ? transaction.before : void 0) != null);
+          if (isChain) {
+            _chainCounter += 1;
+          }
         }
-        for (_i = 0, _len = transactionResults.length; _i < _len; _i++) {
-          result = transactionResults[_i];
+        if (_queueLength[originalTransaction.queue] != null) {
+          _queueLength[originalTransaction.queue] -= 1;
+        }
+        for (_i = 0, _len = newResults.length; _i < _len; _i++) {
+          result = newResults[_i];
           results.push(result);
         }
         lastStatus = status;
@@ -359,6 +367,8 @@
       }
       if (err != null) {
         return done.apply(null, [err, lastStatus].concat(__slice.call(results)));
+      } else if (transaction.fnType === 'reader') {
+        return done.apply(null, [err].concat(__slice.call(results)));
       } else if (lastStatus === 'ChainFailed') {
         return _updateTransactionStatus(transaction, transaction.status, 'ChainFailed', null, null, transaction.status, function(statusErr) {
           if (statusErr != null) {
@@ -487,10 +497,10 @@
   _executeImmediate = function(transaction, done) {
     _immediateCounter += 1;
     return commit(transaction, function() {
-      var etc;
-      etc = 1 <= arguments.length ? __slice.call(arguments, 0) : [];
+      var err, etc, status, transaction;
+      err = arguments[0], transaction = arguments[1], status = arguments[2], etc = 4 <= arguments.length ? __slice.call(arguments, 3) : [];
       _immediateCounter -= 1;
-      return done.apply(null, etc);
+      return done.apply(null, [err, status].concat(__slice.call(etc)));
     });
   };
 
@@ -833,13 +843,13 @@
       }
       return _updateTransactionStatus(transaction, 'Processing', newStatus, null, rollbackResults, function(statusErr) {
         if (statusErr != null) {
-          return done(statusErr, newStatus);
+          return done(statusErr, transaction, newStatus);
         } else if (rollbackErr != null) {
           return _pushTransactionError(transaction, rollbackErr, function() {
-            return done(rollbackErr, newStatus);
+            return done(rollbackErr, transaction, newStatus);
           });
         } else {
-          return done(null, newStatus);
+          return done(null, transaction, newStatus);
         }
       });
     });
@@ -908,9 +918,9 @@
     if (typeof transactionOrFunction === 'function') {
       if (transactionOrFunction.fnType === 'reader') {
         return transactionOrFunction(function() {
-          var errAndResults;
-          errAndResults = 1 <= arguments.length ? __slice.call(arguments, 0) : [];
-          return done.apply(null, errAndResults);
+          var err, results;
+          err = arguments[0], results = 2 <= arguments.length ? __slice.call(arguments, 1) : [];
+          return done.apply(null, [err, transactionOrFunction, null].concat(__slice.call(results)));
         });
       }
       if (transactionOrFunction.fnType === 'writer') {
@@ -918,7 +928,7 @@
           var err, error, results, transaction, transactionOrString;
           err = arguments[0], transactionOrString = arguments[1], results = 3 <= arguments.length ? __slice.call(arguments, 2) : [];
           if (typeof transactionOrString === 'string' || transactionOrString instanceof String || (transactionOrString == null)) {
-            return done.apply(null, [err, transactionOrString].concat(__slice.call(results)));
+            return done.apply(null, [err, transactionOrFunction, transactionOrString].concat(__slice.call(results)));
           } else {
             if (Array.isArray(transactionOrString)) {
               transaction = exports.chain(transactionOrString);
@@ -926,15 +936,15 @@
               transaction = transactionOrString;
             }
             if (transaction.queue !== transactionOrFunction.queue) {
-              return done(new Error("transaction producing function assigned to a different queue from that of the transaction it produced \n(" + transaction.queue + " isnt " + transactionOrFunction.queue + ")"), null);
+              return done(new Error("transaction producing function assigned to a different queue from that of the transaction it produced \n(" + transaction.queue + " isnt " + transactionOrFunction.queue + ")"), transaction);
             }
             error = _checkTransaction(transaction);
             if (error != null) {
-              return done(error, null);
+              return done(error, transaction);
             }
             if ((transactionOrFunction.before != null) || (transactionOrFunction.after != null)) {
               if ((transaction.before != null) || (transaction.after != null)) {
-                return done(new Error(" \na committed.writer which was part of a chain has produced a transaction object which is\nalso part of a chain, it is not clear how to act sequentially on two chains."), null);
+                return done(new Error(" \na committed.writer which was part of a chain has produced a transaction object which is\nalso part of a chain, it is not clear how to act sequentially on two chains."), transaction);
               }
               transaction.before = transactionOrFunction.before;
               transaction.after = transactionOrFunction.after;
@@ -988,7 +998,7 @@
                 result = transactionResults[_j];
                 writerResults.push(result);
               }
-              return done.apply(null, [err, 'Committed'].concat(__slice.call(writerResults)));
+              return done.apply(null, [err, transaction, 'Committed'].concat(__slice.call(writerResults)));
             });
           } else {
             return _updateTransactionStatus(transaction, transaction.status, transaction.status, statuses, null, "legitimate transaction failure", function(statusErr) {

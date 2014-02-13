@@ -220,7 +220,7 @@ _queuePosition = (queueName, done) ->
     )
 
 _enqueueAndHandleChains = (transaction, done) ->
-    isChain = transaction.after? and transaction.before?
+    isChain = transaction?.after? and transaction?.before?
     results = []
     lastStatus = null
     #there's a problem with using queueLengths as a general execution guard
@@ -240,11 +240,21 @@ _enqueueAndHandleChains = (transaction, done) ->
                     delete _queueLength[transaction.queue]
             #we're about to add an item to the queue, so increment the queue count
             _queueLength[transaction.queue] += 1
-            _queues[transaction.queue].push transaction, (err, status, transactionResults...) ->
+            _queues[transaction.queue].push transaction, (err, newTransaction, status, newResults...) ->
+                
+                originalTransaction = transaction
+
+                if transaction.fnType is 'writer'
+                    #then we may have produced a new transaction object
+                    transaction = newTransaction
+                    #reevaluate isChain
+                    isChain = transaction?.after? and transaction?.before?
+                    if isChain then _chainCounter += 1
+
                 #execution of this transaction is now finished, first revise the queue counter
-                if _queueLength[transaction.queue]? then _queueLength[transaction.queue] -= 1
+                if _queueLength[originalTransaction.queue]? then _queueLength[originalTransaction.queue] -= 1
                 #accumulate any results from the transaction
-                results.push(result) for result in transactionResults
+                results.push(result) for result in newResults
                 #remember the status 
                 lastStatus = status
                 #yield to the event-loop to let any drain run, then see if we need to repeat 
@@ -275,11 +285,20 @@ _enqueueAndHandleChains = (transaction, done) ->
                 #we just executed a single transaction, so
                 return false #to exit the loop and return the outcome
         , (err) ->
+
+            #examine if we had a reader function, as the callback is different.
+
             if isChain
                 #then remove the special chain guard
                 _chainCounter -= 1
+
             if err? 
                 return done err, lastStatus, results...
+
+            else if transaction.fnType is 'reader'
+                #then there is no status to return, just the results.
+                return done err, results...
+
             else if lastStatus is 'ChainFailed'
                 #then we need to save this status and keep the real failure
                 #status in transaction.execution.info. (we couldn't have done
@@ -375,9 +394,9 @@ exports.immediately = (transaction, done) ->
 
 _executeImmediate = (transaction, done) ->
     _immediateCounter += 1
-    return commit transaction, (etc...) ->
+    return commit transaction, (err, transaction, status, etc...) ->
         _immediateCounter -= 1
-        done(etc...)
+        done(err, status, etc...)
 
 _immediately = (transaction, done) ->
     transaction.enqueuedAt = new Date()
@@ -616,12 +635,12 @@ rollback = (transaction, done) ->
         #errors implied by the rollback
         _updateTransactionStatus transaction, 'Processing', newStatus, null, rollbackResults, (statusErr) ->
             if statusErr?
-                done(statusErr, newStatus)
+                done(statusErr, transaction, newStatus)
             else if rollbackErr?
                 _pushTransactionError transaction, rollbackErr, () ->
-                    done(rollbackErr, newStatus)
+                    done(rollbackErr, transaction, newStatus)
             else
-                done(null, newStatus)
+                done(null, transaction, newStatus)
 
 
 #worker function for the GlobalLock queue
@@ -667,16 +686,16 @@ commit = (transactionOrFunction, done) ->
     if typeof(transactionOrFunction) is 'function'
         #work out whether its a reader or a writer function
         if transactionOrFunction.fnType is 'reader'
-            return transactionOrFunction (errAndResults...) ->
+            return transactionOrFunction (err, results...) ->
                 #a reader function passes it's err and results straight to the callback
-                done(errAndResults...)
+                done(err, transactionOrFunction, null, results...)
         if transactionOrFunction.fnType is 'writer'
             #if its a writer function then we should look at what the callback returns 
             return transactionOrFunction (err, transactionOrString, results...) ->
                 #a writer function may either return a transaction, a chain, or a string
                 if (typeof(transactionOrString) is 'string' or transactionOrString instanceof String or not transactionOrString?)
                     #if a string is returned then this should be the overall status of the transaction
-                    return done(err, transactionOrString, results...)
+                    return done(err, transactionOrFunction, transactionOrString, results...)
                 else
                     #we have been given a transaction or chain as a result of calling our function.
                     if Array.isArray(transactionOrString)
@@ -689,11 +708,11 @@ commit = (transactionOrFunction, done) ->
                         return done( new Error("""
                             transaction producing function assigned to a different queue from that of the transaction it produced 
                             (#{transaction.queue} isnt #{transactionOrFunction.queue})
-                            """), null )
+                            """), transaction )
                     #make the same checks against the transaction as we would have done in committed.enqueue
                     error = _checkTransaction(transaction)
                     if error? 
-                        return done( error, null ) 
+                        return done( error, transaction ) 
                     #a writer function may have had a chain
                     if transactionOrFunction.before? or transactionOrFunction.after?
                         if transaction.before? or transaction.after? 
@@ -704,7 +723,7 @@ commit = (transactionOrFunction, done) ->
                             return done( new Error(""" 
                                 a committed.writer which was part of a chain has produced a transaction object which is
                                 also part of a chain, it is not clear how to act sequentially on two chains.
-                                """), null)
+                                """), transaction)
                         #copy the writer function's chain onto the object for onward processing. 
                         transaction.before = transactionOrFunction.before
                         transaction.after = transactionOrFunction.after
@@ -752,7 +771,7 @@ _commitCore = (transaction, writerResults..., done) ->
                         # if err?
                         #     _transactionsCollection.findOne {_id:transaction._id}, (err, doc) ->
                         writerResults.push(result) for result in transactionResults
-                        return done(err, 'Committed', writerResults...)
+                        return done(err, transaction, 'Committed', writerResults...)
                 else
                     #the transaction has (legitimately) failed, write the statuses, and prepare for rollback 
                     _updateTransactionStatus transaction, transaction.status, transaction.status, statuses, null, "legitimate transaction failure", (statusErr) ->

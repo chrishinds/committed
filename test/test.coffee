@@ -1137,6 +1137,64 @@ describe 'Committed', ->
                         docs.length.should.equal 6
                         done()
 
+        it 'earlier queues used by a chain should not be blocked by the remainder of the chain', (done) ->
+            smallTDone = false
+            smallT = committed.transaction 'q1', 'user', [
+                {name: "blockingMethod"}
+            ]
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q1', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q2', 'user', [
+                        {name: "blockingMethod"}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+            )
+            #start bigT first
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                #smallT must have finished by now
+                smallTDone.should.equal true
+                done()
+            #then start smallT
+            committed.enqueue smallT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                smallTDone = true
+
+        it 'should be possible to execute chains that have GlobalLock transactions, one day', (done) ->
+            bigT = committed.chain(
+                [
+                    committed.transaction 'q', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'GlobalLock', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q', 'user', [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+            )
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                _db.collection 'chainedTest', {strict:true}, (err, collection) ->
+                    should.not.exist err
+                    collection.find({execute: 'all'}).toArray (err, docs) ->
+                        docs.length.should.equal 6
+                        done()
+
     describe 'restart', ->
         
         beforeEach (done) ->

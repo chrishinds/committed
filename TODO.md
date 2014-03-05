@@ -12,7 +12,9 @@ Soon
 - findAndModify instruction
 - pre-transaction-store hook for each instruction, to be used for id generation (for new docs or new revisions), will save the extra transaction collection write 
 - translate mongo $operators into __operator on the way in; having to mix __ and $ is confusing.
-- instruction to update every revision in a collection (utilizing config.revisions), could be necessary after a global-lock transaction, could be expensive though, not necessary if all updates are queue-protected
+- transaction-token feature, to allow optional expiry of transactions based on reads which were in-progress during a global-lock transaction. 
+- rollbackProjection needs to respect elemMatch, otherwise there are lots of circumstances where too much state is saved
+- kindness: when an instruction is missing an argument, name that argument in the error.
 
 Later
 -----

@@ -4,7 +4,9 @@ Todo
 Now
 ---
 
-- fill in pending instruction tests
+- fill in pending instruction tests#
+- kindness: when an instruction is missing an argument, name that argument in the error; when you misname the arguments array, report this.
+
 
 Soon
 ----
@@ -14,7 +16,7 @@ Soon
 - translate mongo $operators into __operator on the way in; having to mix __ and $ is confusing.
 - transaction-token feature, to allow optional expiry of transactions based on reads which were in-progress during a global-lock transaction. 
 - rollbackProjection needs to respect elemMatch, otherwise there are lots of circumstances where too much state is saved
-- kindness: when an instruction is missing an argument, name that argument in the error.
+
 
 Later
 -----

@@ -1070,7 +1070,7 @@ exports.db =
                 if revisionNames.length > 0 and not d.revision?
                     d.revision = {}
                     for revisionName in revisionNames
-                        d.revision[revisionName] = 0
+                        d.revision[revisionName] = 1
             options =
                 w:1
                 journal: true

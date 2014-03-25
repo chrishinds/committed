@@ -1415,7 +1415,7 @@
             d.revision = {};
             for (_j = 0, _len1 = revisionNames.length; _j < _len1; _j++) {
               revisionName = revisionNames[_j];
-              d.revision[revisionName] = 0;
+              d.revision[revisionName] = 1;
             }
           }
         }

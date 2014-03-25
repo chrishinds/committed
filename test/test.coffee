@@ -645,8 +645,8 @@ describe 'Committed', ->
                         collection.find({j:1}).toArray (err, docsInDB) ->
                             should.not.exist err
                             docsInDB.length.should.equal 1
-                            docsInDB[0].revision.content.should.equal 1
-                            docsInDB[0].revision.otherContent.should.equal 1
+                            docsInDB[0].revision.content.should.equal 2
+                            docsInDB[0].revision.otherContent.should.equal 2
                             done()
 
         it 'updateOneOpRollback should undo an updateOneOp', (done) ->
@@ -675,8 +675,8 @@ describe 'Committed', ->
                             should.not.exist err
                             docsInDB.length.should.equal 1
                             #rollback must return revision numbers to their initial state
-                            docsInDB[0].revision.content.should.equal 0
-                            docsInDB[0].revision.otherContent.should.equal 0
+                            docsInDB[0].revision.content.should.equal 1
+                            docsInDB[0].revision.otherContent.should.equal 1
                             #we must have removed the key we set during the update
                             should.not.exist docsInDB[0].j
                             done()
@@ -707,8 +707,8 @@ describe 'Committed', ->
                         should.not.exist err
                         collection.findOne _id: doc._id, (err, result) ->
                             should.not.exist err
-                            result.revision.content.should.equal 0
-                            result.revision.otherContent.should.equal 0
+                            result.revision.content.should.equal 1
+                            result.revision.otherContent.should.equal 1
                             result.i.should.equal 1
                             should.not.exist result.j
                             done()
@@ -734,8 +734,8 @@ describe 'Committed', ->
                         should.not.exist err
                         collection.findOne _id: doc._id, (err, result) ->
                             should.not.exist err
-                            result.revision.content.should.equal 1
-                            result.revision.otherContent.should.equal 0
+                            result.revision.content.should.equal 2
+                            result.revision.otherContent.should.equal 1
                             result.i.should.equal 1
                             result.j.should.equal 1
                             done()
@@ -753,7 +753,7 @@ describe 'Committed', ->
                 content: 'here'
                 otherContent: "other"
             oldDoc =
-                revision: content: 0
+                revision: content: 1
                 content: 'here'
             newDoc = 
                 revision: content: 100000
@@ -780,8 +780,8 @@ describe 'Committed', ->
                             delete docsInDB[0]._id
                             docsInDB[0].should.deep.equal 
                                 revision: 
-                                    content: 1
-                                    otherContent: 0
+                                    content: 2
+                                    otherContent: 1
                                 content: 'here again'
                                 otherContent: "other"
                             done()
@@ -791,10 +791,10 @@ describe 'Committed', ->
                 content: 'here'
                 otherContent: "other"
             oldDoc =
-                revision: content: 0
+                revision: content: 1
                 content: 'here'
             newDoc = 
-                revision: content: 0
+                revision: content: 1
                 content: 'here again'
             insert = committed.transaction "test"
             insert.instructions.push
@@ -822,8 +822,8 @@ describe 'Committed', ->
                             delete docsInDB[0]._id
                             docsInDB[0].should.deep.equal 
                                 revision: 
-                                    content: 0
-                                    otherContent: 0
+                                    content: 1
+                                    otherContent: 1
                                 content: 'here'
                                 otherContent: "other"
                             done()
@@ -833,10 +833,10 @@ describe 'Committed', ->
                 content: 'here'
                 otherContent: "other"
             oldDoc =
-                revision: content: 0
+                revision: content: 1
                 content: 'here'
             newDoc = 
-                revision: content: 0
+                revision: content: 1
                 content: 'here again'
             insert = committed.transaction "test"
             insert.instructions.push
@@ -866,8 +866,8 @@ describe 'Committed', ->
                             delete docsInDB[0]._id
                             docsInDB[0].should.deep.equal 
                                 revision: 
-                                    content: 0
-                                    otherContent: 0
+                                    content: 1
+                                    otherContent: 1
                                 content: 'here'
                                 otherContent: "other"
                             done()
@@ -895,8 +895,8 @@ describe 'Committed', ->
                             should.not.exist err
                             docsInDB.length.should.equal 3
                             for d in docsInDB
-                                d.revision.content.should.equal 1
-                                d.revision.otherContent.should.equal 1
+                                d.revision.content.should.equal 2
+                                d.revision.otherContent.should.equal 2
                             done()
 
         it 'updateManyOpRollback should rollback many updates', (done) ->
@@ -924,8 +924,8 @@ describe 'Committed', ->
                             should.not.exist err
                             docsInDB.length.should.equal 3
                             for d in docsInDB
-                                d.revision.content.should.equal 0
-                                d.revision.otherContent.should.equal 0
+                                d.revision.content.should.equal 1
+                                d.revision.otherContent.should.equal 1
                                 should.not.exist d.j
                             done()
 
@@ -1399,7 +1399,7 @@ describe 'Committed', ->
                                 functionTestCollection.find({j:1}).toArray (err, docsInDB) ->
                                     should.not.exist err
                                     docsInDB.length.should.equal 1
-                                    docsInDB[0].revision.number.should.equal 1
+                                    docsInDB[0].revision.number.should.equal 2
                                     done()
 
         it 'should execute writers with global lock', (done) ->

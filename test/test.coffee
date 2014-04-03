@@ -1717,3 +1717,45 @@ describe 'Committed', ->
                 b.should.equal 2
                 c.should.equal 1
                 done()                
+
+    describe 'regex queue name checks', ->
+        
+        beforeEach (done) ->
+            config = 
+                db:_db
+                softwareVersion:'testSoftwareVersion'
+                revisions: regexTest: ['number']
+                queueNameRegex: /^foo$|^bar$/
+            committed.start config, (err) ->
+                should.not.exist err
+                _db.createCollection 'regexTest', (err, collection) -> 
+                    collection.remove {}, {w:1}, done
+
+        afterEach (done) ->
+            committed.stop done
+        
+        it 'should run a transaction which passes the queue name regex', (done) ->
+            doc = {t:'t', q:'q'}
+            transaction = committed.transaction "foo", {}, [
+                {name: 'db.insert', arguments: ['regexTest', doc]}
+            ]
+            committed.enqueue transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                should.exist(doc._id)
+                _db.collection 'regexTest', (err, collection) ->
+                    should.not.exist err
+                    collection.findOne {_id: doc._id}, (err, docInDB) ->
+                        should.not.exist err
+                        doc.t.should.equal docInDB.t
+                        doc.q.should.equal docInDB.q
+                        done()
+
+        it 'should fail to run a transaction which doesnt pass the regex', (done)->
+            doc = {t:'t', q:'q'}
+            transaction = committed.transaction "baz", {}, [
+                {name: 'db.insert', arguments: ['regexTest', doc]}
+            ]
+            committed.enqueue transaction, (err, status) ->
+                err.toString().should.equal "Error: transaction.queue name baz does not match required regex /^foo$|^bar$/"
+                done()

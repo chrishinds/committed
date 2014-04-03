@@ -5,7 +5,6 @@ Now
 ---
 
 - fill in pending instruction tests
-- optional regex to trap use of incorrect queue names
 
 Soon
 ----

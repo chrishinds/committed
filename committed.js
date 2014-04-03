@@ -389,11 +389,20 @@
   };
 
   _checkTransaction = function(transaction) {
-    var _ref;
+    var i, key, _i, _len, _ref, _ref1;
     if ((transaction.status != null) && transaction.status !== 'Queued') {
       return new Error("Can't queue a transaction which is at a status other than Queued (or null)");
     }
     if (typeof transaction !== 'function') {
+      _ref = transaction.instructions;
+      for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+        i = _ref[_i];
+        for (key in i) {
+          if (key !== 'name' && key !== 'arguments') {
+            return new Error("can't queue a transaction with an instruction that contains key '" + key + "', instructions can contain only 'name' and 'arguments' keys");
+          }
+        }
+      }
       if (!_instructionsExistFor(transaction)) {
         return new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry");
       }
@@ -406,7 +415,7 @@
         return new Error("Can't queue a transaction chain where one transaction is at a status other than Queued");
       }
     } else {
-      if ((transaction.fnType == null) || ((_ref = transaction.fnType) !== 'reader' && _ref !== 'writer')) {
+      if ((transaction.fnType == null) || ((_ref1 = transaction.fnType) !== 'reader' && _ref1 !== 'writer')) {
         return new Error("can't queue a function which doesn't have a fnType of 'reader' or 'writer'");
       }
     }

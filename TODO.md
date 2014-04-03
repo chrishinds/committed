@@ -8,6 +8,8 @@ Now
 - kindness: when an instruction is missing an argument, name that argument in the error; when you misname the arguments array, report this.
 - optional regex to trap use of incorrect queue names
 
+- upsert 
+- additional fields on transaction
 
 Soon
 ----

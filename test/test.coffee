@@ -929,6 +929,100 @@ describe 'Committed', ->
                                 should.not.exist d.j
                             done()
 
+        it 'upsertOneOp should update a document', (done) ->
+            doc = my_date: new Date()
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', doc]}
+            ]
+            committed.enqueue transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.upsertOneOp'
+                        arguments: ['instructionsTest', {my_date: doc.my_date}, {__set: updated: true} ]
+                    }
+                ]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({_id: doc._id}).toArray (err, docsInDB) ->
+                            should.not.exist err
+                            docsInDB.length.should.equal 1
+                            docsInDB[0].revision.content.should.equal 2
+                            docsInDB[0].revision.otherContent.should.equal 2
+                            docsInDB[0].updated.should.be.true
+                            done()
+
+
+        it 'upsertOneOp should insert a document', (done) ->
+            _id = new ObjectID()
+            upsert = committed.transaction "test", 'user', [
+                {
+                    name: 'db.upsertOneOp'
+                    arguments: ['instructionsTest', {_id: _id}, {__set: inserted: true} ]
+                }
+            ]
+            committed.enqueue upsert, (err,status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'instructionsTest', (err, collection) ->
+                    collection.find({_id: _id}).toArray (err, docsInDB) ->
+                        should.not.exist err
+                        docsInDB.length.should.equal 1
+                        docsInDB[0].revision.content.should.equal 1
+                        docsInDB[0].revision.otherContent.should.equal 1
+                        docsInDB[0].inserted.should.be.true
+                        done()
+
+        it 'upsertOneOp should rollback after an update', (done) ->
+            doc = my_date: new Date()
+            transaction = committed.transaction "test", 'user', [
+                {name: 'db.insert', arguments: ['instructionsTest', doc]}
+            ]
+            committed.enqueue transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                update = committed.transaction "test", 'user', [
+                    {
+                        name: 'db.upsertOneOp'
+                        arguments: ['instructionsTest', {my_date: doc.my_date}, {__set: updated: true} ]
+                    }, {
+                        name: 'failMethod'
+                    }
+                ]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Failed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({_id: doc._id}).toArray (err, docsInDB) ->
+                            should.not.exist err
+                            docsInDB.length.should.equal 1
+                            docsInDB[0].revision.content.should.equal 1
+                            docsInDB[0].revision.otherContent.should.equal 1
+                            should.not.exist docsInDB[0].updated
+                            done()
+
+        it 'upsertOneOp should rollback after an insert', (done) ->
+            _id = new ObjectID()
+            upsert = committed.transaction "test", 'user', [
+                {
+                    name: 'db.upsertOneOp'
+                    arguments: ['instructionsTest', {_id: _id}, {__set: inserted: true} ]
+                }, {
+                    name: 'failMethod'
+                }
+            ]
+            committed.enqueue upsert, (err,status) ->
+                should.not.exist err
+                status.should.be.string 'Failed'
+                _db.collection 'instructionsTest', (err, collection) ->
+                    collection.find({_id: _id}).toArray (err, docsInDB) ->
+                        should.not.exist err
+                        docsInDB.length.should.equal 0
+                        done()
+
 
     describe 'chained transactions', ->
 

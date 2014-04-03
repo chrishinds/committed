@@ -1668,15 +1668,15 @@
     }
   };
 
-  exports.transaction = function(queueName, username, instructions, rollback) {
-    return {
+  exports.transaction = function(queueName, additionalFields, instructions, rollback) {
+    var key, value;
+    t = {
       softwareVersion: _softwareVersion,
       queue: queueName,
       position: null,
       startedAt: null,
       enqueuedAt: null,
       lastUpdatedAt: null,
-      enqueuedBy: username,
       status: "Queued",
       instructions: instructions != null ? instructions : [],
       rollback: rollback,
@@ -1688,6 +1688,13 @@
         rollback: null
       }
     };
+    if (additionalFields != null) {
+      for (key in additionalFields) {
+        value = additionalFields[key];
+        t[key] = value;
+      }
+    }
+    return t;
   };
 
   exports.chain = function(transactions) {

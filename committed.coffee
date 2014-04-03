@@ -1256,25 +1256,29 @@ exports.db =
 
 
 # helper function to produce a basic object to represent a transaction; what
-# the transactions collection will contain.
+# the transactions collection will contain. Use additionalFields to add stuff
+# like which user or which REST route executed the transaction.
 
-exports.transaction = (queueName, username, instructions, rollback) ->
-    softwareVersion: _softwareVersion
-    queue: queueName
-    position: null
-    startedAt: null
-    enqueuedAt: null
-    lastUpdatedAt: null
-    enqueuedBy: username
-    status: "Queued"
-    instructions: if instructions? then instructions else []
-    rollback: rollback
-    execution:
-        state: []
-        errors: []
-        info: []
-        results: null
-        rollback: null
+exports.transaction = (queueName, additionalFields, instructions, rollback) ->
+    t = 
+        softwareVersion: _softwareVersion
+        queue: queueName
+        position: null
+        startedAt: null
+        enqueuedAt: null
+        lastUpdatedAt: null
+        status: "Queued"
+        instructions: if instructions? then instructions else []
+        rollback: rollback
+        execution:
+            state: []
+            errors: []
+            info: []
+            results: null
+            rollback: null
+    if additionalFields?
+        t[key] = value for key, value of additionalFields
+    return t
 
 # Create a chain from the supplied array of transactions. This is to encourage
 # you not to create nested chains - these wont be executed. A chain is a list

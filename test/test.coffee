@@ -128,7 +128,7 @@ describe 'Committed', ->
                     for q in [1..10]
                         do (q) ->
                             tasks.push (done) ->
-                                transaction = committed.transaction "testQ#{q}", 'user', [
+                                transaction = committed.transaction "testQ#{q}", {}, [
                                     name: 'db.insert', arguments: ['validOpsTest', {t:t, q:q}]
                                 ]
                                 committed.enqueue transaction, (err, status) ->
@@ -150,7 +150,7 @@ describe 'Committed', ->
             committed.stop done
 
         it 'should let normal queues process after a GlobalLock transaction', (done) ->
-            globalTransaction = committed.transaction 'GlobalLock', 'user'
+            globalTransaction = committed.transaction 'GlobalLock', {}
             globalTransaction.instructions.push
                 name: 'blockingMethod'
             committed.withGlobalLock globalTransaction, (err, status) ->
@@ -158,13 +158,13 @@ describe 'Committed', ->
                 status.should.equal 'Committed'
 
                 # after the global lock transaction is finished, make sure the queues are open again
-                nonGlobalTransaction = committed.transaction 'nonGlobal', 'user', [], []
+                nonGlobalTransaction = committed.transaction 'nonGlobal', {}, [], []
                 committed.enqueue nonGlobalTransaction, (err, status) ->
                     status.should.equal 'Committed'
                     done(err)
 
         it 'should let immediate transactions process after a GlobalLock transaction', (done) ->
-            globalTransaction = committed.transaction 'GlobalLock', 'user', [
+            globalTransaction = committed.transaction 'GlobalLock', {}, [
                 name: 'blockingMethod'
             ]
             committed.withGlobalLock globalTransaction, (err, status) ->
@@ -179,15 +179,15 @@ describe 'Committed', ->
         it 'should wait for transactions in other queues to finish before starting a global lock transaction', (done) ->
             d = new Date()
             doc1 = now: d; doc2 = now: d; doc3 = now: d
-            ot1 = committed.transaction 'q1', 'user', [
+            ot1 = committed.transaction 'q1', {}, [
                 {name: 'blockingMethod'}
                 {name: 'db.insert', arguments: ['globalLockTest', doc1]}
             ]
-            ot2 = committed.transaction 'q2', 'user', [
+            ot2 = committed.transaction 'q2', {}, [
                 {name: 'blockingMethod'}
                 {name: 'db.insert', arguments: ['globalLockTest', doc2]}
             ]
-            ot3 = committed.transaction 'q3', 'user', [
+            ot3 = committed.transaction 'q3', {}, [
                 {name: 'blockingMethod'}
                 {name: 'db.insert', arguments: ['globalLockTest', doc3]}
             ]
@@ -202,7 +202,7 @@ describe 'Committed', ->
                         instructionDone(null, true)
             committed.register 'globalLockTestMethod', globalLockTestMethod
             committed.register 'globalLockTestMethodRollback', committed.db.pass
-            gt = committed.transaction 'GlobalLock', 'user', [
+            gt = committed.transaction 'GlobalLock', {}, [
                 {name: 'globalLockTestMethod'} 
             ]
 
@@ -222,7 +222,7 @@ describe 'Committed', ->
 
         it 'should wait for immediate transactions to complete before starting a global lock', (done) ->
             doc = now: new Date()
-            im = committed.transaction null, 'user', [
+            im = committed.transaction null, {}, [
                 {name: 'blockingMethod'}
                 {name: 'db.insert', arguments: ['globalLockTest', doc]}
             ]
@@ -238,7 +238,7 @@ describe 'Committed', ->
                         instructionDone(null, true)
             committed.register 'globalImmediateTestMethod', globalImmediateTestMethod
             committed.register 'globalImmediateTestMethodRollback', committed.db.pass
-            gt = committed.transaction 'GlobalLock', 'user', [ name: 'globalImmediateTestMethod' ]
+            gt = committed.transaction 'GlobalLock', {}, [ name: 'globalImmediateTestMethod' ]
             committed.immediately im, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Committed'
@@ -250,13 +250,13 @@ describe 'Committed', ->
         it 'should pend ordinary queues during globallock and resume them after', (done) ->
             d = new Date()
             doc1 = now: d; doc2 = now: d; doc3 = now: d
-            gt1 = committed.transaction 'GlobalLock', 'user', [
+            gt1 = committed.transaction 'GlobalLock', {}, [
                 {name: 'db.insert', arguments: ['globalLockTest', doc1]}
             ]
-            gt2 = committed.transaction 'GlobalLock', 'user', [
+            gt2 = committed.transaction 'GlobalLock', {}, [
                 {name: 'db.insert', arguments: ['globalLockTest', doc2]}
             ]
-            gt3 = committed.transaction 'GlobalLock', 'user', [
+            gt3 = committed.transaction 'GlobalLock', {}, [
                 {name: 'db.insert', arguments: ['globalLockTest', doc3]}
             ]
             pendingTestMethod = (config, transaction, state, args, instructionDone) ->
@@ -270,7 +270,7 @@ describe 'Committed', ->
                         instructionDone(null, true)
             committed.register 'pendingTestMethod', pendingTestMethod
             committed.register 'pendingTestMethodRollback', committed.db.pass
-            ot = committed.transaction 'Q', 'user', [
+            ot = committed.transaction 'Q', {}, [
                 {name: 'pendingTestMethod'} 
             ]
 
@@ -291,13 +291,13 @@ describe 'Committed', ->
         it 'should pend immediately transactions during globallock and resume after', (done) ->
             d = new Date()
             doc1 = now: d; doc2 = now: d; doc3 = now: d
-            gt1 = committed.transaction 'GlobalLock', 'user', [
+            gt1 = committed.transaction 'GlobalLock', {}, [
                 {name: 'db.insert', arguments: ['globalLockTest', doc1]}
             ]
-            gt2 = committed.transaction 'GlobalLock', 'user', [
+            gt2 = committed.transaction 'GlobalLock', {}, [
                 {name: 'db.insert', arguments: ['globalLockTest', doc2]}
             ]
-            gt3 = committed.transaction 'GlobalLock', 'user', [
+            gt3 = committed.transaction 'GlobalLock', {}, [
                 {name: 'db.insert', arguments: ['globalLockTest', doc3]}
             ]
             pendingImmediateTestMethod = (config, transaction, state, args, instructionDone) ->
@@ -311,7 +311,7 @@ describe 'Committed', ->
                         instructionDone(null, true)
             committed.register 'pendingImmediateTestMethod', pendingImmediateTestMethod
             committed.register 'pendingImmediateTestMethodRollback', committed.db.pass
-            im = committed.transaction null, 'user', [
+            im = committed.transaction null, {}, [
                 {name: 'pendingTestMethod'} 
             ]
 
@@ -345,9 +345,9 @@ describe 'Committed', ->
             doc1 = inserted: 'beforeStop'
             doc2 = inserted: 'beforeStop'
             doc3 = inserted: 'beforeStop'
-            im = committed.transaction null, 'user', [ {name: 'db.insert', arguments: ['stopTest', doc1]} ]
-            gt = committed.transaction 'GlobalLock', 'user', [{name: 'db.insert', arguments: ['stopTest', doc2]}]
-            ot = committed.transaction 'OrdinaryQueue', 'user', [{name: 'db.insert', arguments: ['stopTest', doc3]}]
+            im = committed.transaction null, {}, [ {name: 'db.insert', arguments: ['stopTest', doc1]} ]
+            gt = committed.transaction 'GlobalLock', {}, [{name: 'db.insert', arguments: ['stopTest', doc2]}]
+            ot = committed.transaction 'OrdinaryQueue', {}, [{name: 'db.insert', arguments: ['stopTest', doc3]}]
             committed.immediately im, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Committed'
@@ -389,7 +389,7 @@ describe 'Committed', ->
 
         it 'should rollback an errored transaction and return status FailedCommitErrorRollbackOk', (done) ->
             docA = {foo:true}
-            transaction = committed.transaction 'rollbackTest', 'user', [
+            transaction = committed.transaction 'rollbackTest', {}, [
                 {name: 'db.insert', arguments: ['rollbackTest', docA]}
                 {name: 'errorMethod'}
             ], [
@@ -407,7 +407,7 @@ describe 'Committed', ->
         it 'should not execute rollbacks for instructions which were not executed, nor execute further instructions after an error', (done) ->
             docA = {foo:true}
             docB = {bar:true}
-            transaction = committed.transaction 'rollbackTest', 'user', [
+            transaction = committed.transaction 'rollbackTest', {}, [
                 {name: 'db.insert', arguments: ['rollbackTest', docA]}
                 {name: 'errorMethod'}
                 {name: 'db.insert', arguments: ['rollbackTest', docB]}
@@ -428,7 +428,7 @@ describe 'Committed', ->
 
         it 'should rollback a failed transaction and return status Failed', (done) ->
             doc = {rolledback: false}
-            transaction = committed.transaction 'rollbackTest', 'user', [
+            transaction = committed.transaction 'rollbackTest', {}, [
                 {name: 'db.insert', arguments: ['rollbackTest', doc]}
                 {name: 'failMethod'}
             ], [
@@ -444,7 +444,7 @@ describe 'Committed', ->
 
         it 'should report a catastrophe if a rollback fails after an error', (done) ->
             doc = content: 'agogo'
-            transaction = committed.transaction 'rollbackTest', 'user', [
+            transaction = committed.transaction 'rollbackTest', {}, [
                 {name: 'db.insert', arguments: ['rollbackTest', doc]}
                 {name: 'errorMethod'} #this will error the transaction
             ], [
@@ -458,7 +458,7 @@ describe 'Committed', ->
 
         it 'should report a catastrophe if a rollback fails after a failure', (done) ->
             doc = content: 'agogo'
-            transaction = committed.transaction 'rollbackTest', 'user', [
+            transaction = committed.transaction 'rollbackTest', {}, [
                 {name: 'db.insert', arguments: ['rollbackTest', doc]}
                 {name: 'failMethod'}
             ], [
@@ -470,7 +470,7 @@ describe 'Committed', ->
                 done(err)
 
         it 'should use implicit rollbacks when the transaction.rollback array is null', (done) ->
-            transaction = committed.transaction 'rollbackTest', 'user', [
+            transaction = committed.transaction 'rollbackTest', {}, [
                 {name: 'db.insert', arguments: ['rollbackTest', {content: 'great content'}]}
                 {name: 'db.insert', arguments: ['rollbackTest', {content: 'more great content'}]}
                 {name: 'failSlowlyMethod', arguments: []}
@@ -572,7 +572,7 @@ describe 'Committed', ->
 
         it 'insert should reach mongo, and be issued with an _id', (done) ->
             doc = {t:'t', q:'q'}
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', doc]}
             ]
             committed.enqueue transaction, (err, status) ->
@@ -589,7 +589,7 @@ describe 'Committed', ->
 
         it 'insert should work with multiple documents', (done) ->
             docs = ( {i: i} for i in [0..10] )
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', docs]}
             ]
             committed.enqueue transaction, (err, status) ->
@@ -605,7 +605,7 @@ describe 'Committed', ->
 
         it 'insertRollback should undo insert for multiple documents', (done) ->
             docs = ( {i: i} for i in [0..10] )
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', docs]}
                 {name: 'failMethod'}
             ], [
@@ -625,14 +625,14 @@ describe 'Committed', ->
 
         it 'updateOneOp should update one document, without specified revisions all are incremented', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', docs]}
             ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 ids = ( d._id for d in docs )
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.updateOneOp'
                         arguments: ['instructionsTest', {_id: {$in: ids}, i: {$gt: 2}}, {$inc: j: 1} ]
@@ -651,14 +651,14 @@ describe 'Committed', ->
 
         it 'updateOneOpRollback should undo an updateOneOp', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', docs]}
             ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 ids = ( d._id for d in docs )
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                         {
                             name: 'db.updateOneOp'
                             arguments: ['instructionsTest', {_id: {$in: ids}, i: {$gt: 2}}, {$inc: j: 1} ]
@@ -683,13 +683,13 @@ describe 'Committed', ->
 
         it 'updateOneOp should not update a document thats inconsistent with a given revision', (done) ->
             doc = {i: 1}
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', doc]}
             ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                         {
                             name: 'db.updateOneOp'
                             arguments: ['instructionsTest', {_id: doc._id}, {$inc: j: 1}, {}, 'content' ]
@@ -715,13 +715,13 @@ describe 'Committed', ->
 
         it 'updateOneOp should only increment specified revisions', (done) ->
             doc = {i: 1}
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', doc]}
             ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                         {
                             name: 'db.updateOneOp'
                             arguments: ['instructionsTest', {_id: doc._id}, {$set: j: 1}, {}, 'content' ]
@@ -766,7 +766,7 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = insertDoc._id
-                update = committed.transaction "test", 'user'
+                update = committed.transaction "test", {}
                 update.instructions.push
                     name: 'db.updateOneDoc'
                     arguments: ['instructionsTest', newDoc, oldDoc]
@@ -804,7 +804,7 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = insertDoc._id
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.updateOneDoc'
                         arguments: ['instructionsTest', newDoc, oldDoc]
@@ -847,7 +847,7 @@ describe 'Committed', ->
                 status.should.be.string 'Committed'
                 oldDoc._id = newDoc._id = insertDoc._id
                 # if we do the update with the same docs twice, the second should fail the transaction.
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.updateOneDoc'
                         arguments: ['instructionsTest', newDoc, oldDoc]
@@ -874,14 +874,14 @@ describe 'Committed', ->
 
         it 'updateManyOp should update many documents', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            insert = committed.transaction "test", 'user', [
+            insert = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', docs]}
             ]
             committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 ids = ( d._id for d in docs )
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.updateManyOp'
                         arguments: ['instructionsTest', {_id: $in: ids}, {$inc: j: 1} ]
@@ -901,14 +901,14 @@ describe 'Committed', ->
 
         it 'updateManyOpRollback should rollback many updates', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            insert = committed.transaction "test", 'user', [
+            insert = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', docs]}
             ]
             committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 ids = ( d._id for d in docs )
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.updateManyOp'
                         arguments: ['instructionsTest', {_id: $in: ids}, {$inc: j: 1} ]
@@ -931,13 +931,13 @@ describe 'Committed', ->
 
         it 'upsertOneOp should update a document', (done) ->
             doc = my_date: new Date()
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', doc]}
             ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.upsertOneOp'
                         arguments: ['instructionsTest', {my_date: doc.my_date}, {$set: updated: true} ]
@@ -958,7 +958,7 @@ describe 'Committed', ->
 
         it 'upsertOneOp should insert a document', (done) ->
             _id = new ObjectID()
-            upsert = committed.transaction "test", 'user', [
+            upsert = committed.transaction "test", {}, [
                 {
                     name: 'db.upsertOneOp'
                     arguments: ['instructionsTest', {_id: _id}, {$set: inserted: true} ]
@@ -978,13 +978,13 @@ describe 'Committed', ->
 
         it 'upsertOneOp should rollback after an update', (done) ->
             doc = my_date: new Date()
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['instructionsTest', doc]}
             ]
             committed.enqueue transaction, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.upsertOneOp'
                         arguments: ['instructionsTest', {my_date: doc.my_date}, {$set: updated: true} ]
@@ -1006,7 +1006,7 @@ describe 'Committed', ->
 
         it 'upsertOneOp should rollback after an insert', (done) ->
             _id = new ObjectID()
-            upsert = committed.transaction "test", 'user', [
+            upsert = committed.transaction "test", {}, [
                 {
                     name: 'db.upsertOneOp'
                     arguments: ['instructionsTest', {_id: _id}, {$set: inserted: true} ]
@@ -1038,17 +1038,17 @@ describe 'Committed', ->
         it 'should execute all the instructions in each transaction in the chain', (done) ->
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q3', 'user', [
+                    committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
@@ -1076,28 +1076,28 @@ describe 'Committed', ->
 
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'chainQueueCheck', arguments: ['q1']}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'chainQueueCheck', arguments: ['q2']}
                     ]
                 , 
-                    committed.transaction 'q3', 'user', [
+                    committed.transaction 'q3', {}, [
                         {name: 'chainQueueCheck', arguments: ['q3']}
                     ]
                 ]
             )
-            q1 = committed.transaction 'q1', 'user', [
+            q1 = committed.transaction 'q1', {}, [
                 {name: "blockingMethod"}
                 {name: 'db.insert', arguments: ['chainedTest', {where:'q1'}]}
             ]
-            q2 = committed.transaction 'q2', 'user', [
+            q2 = committed.transaction 'q2', {}, [
                 {name: "blockingMethod"}
                 {name: 'db.insert', arguments: ['chainedTest', {where:'q2'}]}
             ]
-            q3 = committed.transaction 'q3', 'user', [
+            q3 = committed.transaction 'q3', {}, [
                 {name: "blockingMethod"}
                 {name: 'db.insert', arguments: ['chainedTest', {where:'q3'}]}
             ]
@@ -1118,17 +1118,17 @@ describe 'Committed', ->
         it 'should return Failed if the first transaction in the chain fails, and roll it back', (done) ->
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'failMethod'}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q3', 'user', [
+                    committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
@@ -1146,17 +1146,17 @@ describe 'Committed', ->
         it 'should return ChainFailed if a non-first transaction fails, and rollback only that failed transaction', (done) ->
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'failMethod'}
                     ]
                 , 
-                    committed.transaction 'q3', 'user', [
+                    committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
@@ -1174,17 +1174,17 @@ describe 'Committed', ->
         it 'should finish executing a chain before allowing exports.stop to callback', (done) ->
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q3', 'user', [
+                    committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
@@ -1206,17 +1206,17 @@ describe 'Committed', ->
         it 'should execute chains which operate within one single queue', (done) ->
             bigT = committed.chain(
                 [
-                    committed.transaction 'q', 'user', [
+                    committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q', 'user', [
+                    committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q', 'user', [
+                    committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
@@ -1233,16 +1233,16 @@ describe 'Committed', ->
 
         it 'earlier queues used by a chain should not be blocked by the remainder of the chain', (done) ->
             smallTDone = false
-            smallT = committed.transaction 'q1', 'user', [
+            smallT = committed.transaction 'q1', {}, [
                 {name: "blockingMethod"}
             ]
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: "blockingMethod"}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
@@ -1264,17 +1264,17 @@ describe 'Committed', ->
         it 'should be possible to execute chains that have GlobalLock transactions, one day', (done) ->
             bigT = committed.chain(
                 [
-                    committed.transaction 'q', 'user', [
+                    committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'GlobalLock', 'user', [
+                    committed.transaction 'GlobalLock', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
                 , 
-                    committed.transaction 'q', 'user', [
+                    committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
@@ -1301,21 +1301,21 @@ describe 'Committed', ->
             committed.stop done
 
         it 'should execute any transactions left at Queued status', (done) ->
-            tinyT = committed.transaction null, 'user', [
+            tinyT = committed.transaction null, {}, [
                 {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
             ]
-            littleT = committed.transaction 'q1', 'user', [
+            littleT = committed.transaction 'q1', {}, [
                 {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                 {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
             ]
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ]
@@ -1348,7 +1348,7 @@ describe 'Committed', ->
         it 'should rollback any transaction left at Processing status', (done) ->
             #have to manually construct the rollback instructions because
             #_setUpTransaction isn't going to get called
-            littleT = committed.transaction 'q1', 'user', [
+            littleT = committed.transaction 'q1', {}, [
                 {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                 {name: 'failMethod'}
             ], [
@@ -1357,7 +1357,7 @@ describe 'Committed', ->
             ]
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'failMethod'}
                     ], [
@@ -1365,7 +1365,7 @@ describe 'Committed', ->
                         {name: 'db.pass'}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ], [
@@ -1409,12 +1409,12 @@ describe 'Committed', ->
         it 'should restart execution of a stalled chain', (done) ->
             bigT = committed.chain(
                 [
-                    committed.transaction 'q1', 'user', [
+                    committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ]
                 , 
-                    committed.transaction 'q2', 'user', [
+                    committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ]
@@ -1463,7 +1463,7 @@ describe 'Committed', ->
 
         it 'should execute writer functions which produce a transaction object, and save it to the transaction collection', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            transaction = committed.transaction "test", 'user', [
+            transaction = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['functionTest', docs]}
             ]
             committed.enqueue transaction, (err, status) ->
@@ -1473,7 +1473,7 @@ describe 'Committed', ->
                     setTimeout( 
                         () -> 
                             ids = ( d._id for d in docs )
-                            update = committed.transaction "a_queue", 'user', [
+                            update = committed.transaction "a_queue", {}, [
                                 {
                                     name: 'db.updateOneOp'
                                     arguments: ['functionTest', {_id: {$in: ids}, i: {$gt: 2}}, {$inc: j: 1} ]
@@ -1513,26 +1513,26 @@ describe 'Committed', ->
 
         it 'should execute writer functions which produce a transaction chain', (done) ->
             doc = i:1
-            insert = committed.transaction "queue", 'user', [
+            insert = committed.transaction "queue", {}, [
                 {name: 'db.insert', arguments: ['functionTest', doc]}
             ]
             myChain = null
             updateWriter = committed.writer 'queue', (done) ->
                 setTimeout( 
                     () -> 
-                        update = committed.transaction "queue", 'user', [
+                        update = committed.transaction "queue", {}, [
                             {
                                 name: 'db.updateOneOp'
                                 arguments: ['functionTest', {_id: doc._id, i: 1}, {$inc: i: 1} ]
                             }
                         ]
-                        update_2 = committed.transaction "queue_2", 'user', [
+                        update_2 = committed.transaction "queue_2", {}, [
                             {
                                 name: 'db.updateOneOp'
                                 arguments: ['functionTest', {_id: doc._id, i: 2}, {$inc: i: 1} ]
                             }
                         ]
-                        update_3 = committed.transaction "queue_3", 'user', [
+                        update_3 = committed.transaction "queue_3", {}, [
                             {
                                 name: 'db.updateOneOp'
                                 arguments: ['functionTest', {_id: doc._id, i:3}, {$inc: i: 1} ]
@@ -1558,12 +1558,12 @@ describe 'Committed', ->
         it 'cannot build chains made up of writers', (done) ->
             doc = i: 1
             inWriter = committed.writer 'queue', (done) ->
-                insert = committed.transaction "queue", 'user', [
+                insert = committed.transaction "queue", {}, [
                     name: 'db.insert', arguments: ['functionTest', doc]
                 ]
                 return done(null, insert)
             upWriter = committed.writer 'queue_2', (done) ->
-                update = committed.transaction "queue_2", 'user', [
+                update = committed.transaction "queue_2", {}, [
                     name: 'db.updateOneOp', arguments: ['functionTest', {_id: doc._id, i: 1}, {$inc: i: 1} ]
                 ]
                 return done(null, update)
@@ -1600,7 +1600,7 @@ describe 'Committed', ->
 
         it 'should return an error when a function produces a transaction whose queue fails to match that of the function', (done) ->
             badWriter = committed.writer 'queue', (done) ->
-                insert = committed.transaction "wrong_queue", 'user', [
+                insert = committed.transaction "wrong_queue", {}, [
                     name: 'db.insert', arguments: ['functionTest', {i: 1}]
                 ]
                 return done(null, insert)
@@ -1640,14 +1640,14 @@ describe 'Committed', ->
 
         it 'should execute an instruction in a single transaction and accumulate the result it yields', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            insert = committed.transaction "test", 'user', [
+            insert = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['resultsTest', docs]}
             ]
             committed.enqueue insert, (err, status) ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 ids = ( d._id for d in docs )
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {
                         name: 'db.updateManyOp'
                         arguments: ['resultsTest', {_id: $in: ids}, {$inc: j: 1} ]
@@ -1661,7 +1661,7 @@ describe 'Committed', ->
 
         it 'should execute multiple instructions a single transaction and accumulate any results they yield', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
-            update = committed.transaction "test", 'user', [
+            update = committed.transaction "test", {}, [
                 {name: 'db.insert', arguments: ['resultsTest', docs]}
                 {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 1}, {$inc: j: 1} ]}
                 {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 2}, {$inc: j: 1} ]}
@@ -1678,7 +1678,7 @@ describe 'Committed', ->
         it 'should execute multiple instructions and a writer and accumulate any results they yield', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
             writer = committed.writer "test", (writerDone) ->
-                update = committed.transaction "test", 'user', [
+                update = committed.transaction "test", {}, [
                     {name: 'db.insert', arguments: ['resultsTest', docs]}
                     {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 1}, {$inc: j: 1} ]}
                     {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 2}, {$inc: j: 1} ]}
@@ -1697,11 +1697,11 @@ describe 'Committed', ->
         it 'should execute a chain produced by a writer and accumulate any results', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
             writer = committed.writer "test", (writerDone) ->
-                update1 = committed.transaction "test", 'user', [
+                update1 = committed.transaction "test", {}, [
                     {name: 'db.insert', arguments: ['resultsTest', docs]}
                     {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 1}, {$inc: j: 1} ]}
                 ]
-                update2 = committed.transaction "test2", 'user', [
+                update2 = committed.transaction "test2", {}, [
                     {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 2}, {$inc: j: 1} ]}
                     #this instruction wont return anything
                     {name: 'db.updateOneOp', arguments: ['resultsTest', {i: $gte: 3}, {$inc: j: 1} ]}

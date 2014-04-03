@@ -565,14 +565,14 @@ _updateTransactionState = (transaction, done) ->
         if not err? and updated isnt 1 then err = new Error("transaction not correctly updated with instruction state before insert")
         done(err)
 
-_clone = (obj, mongolize=false) ->
+_clone = (obj) ->
 
 
     if not obj? or typeof obj isnt 'object'
         return obj
 
     if obj instanceof Array
-        return ( _clone(x, mongolize) for x in obj )
+        return ( _clone(x) for x in obj )
 
     if obj instanceof Date
         return new Date(obj.getTime()) 
@@ -587,19 +587,10 @@ _clone = (obj, mongolize=false) ->
 
     newInstance = new obj.constructor()
     for key,value of obj
-        if mongolize and key.indexOf('__') is 0 #then the string starts with '__', so it's a mongo operator
-            newInstance['$'+key.slice(2)] = _clone(value, mongolize)
-        else
-            newInstance[key] = _clone(value, mongolize)
+        newInstance[key] = _clone(value)
 
     return newInstance
 
-
-#takes an object (which can be serialised in mongo) and converts it to one
-#containing real mongo operations by putting '$' on the front of every key
-#that begins with the characters '__'
-_mongolize = (obj) ->
-    _clone(obj, true)
 
 #this is used to change a partial object into an array of mongo-dot-notation pairs
 _mongoFlatten = (obj) ->
@@ -849,7 +840,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
     if not onlyOne and revisionNumbers?
         return done( new Error("can't #{instructionName} with a revisions object that specifies exact revision numbers, that's only possible for singe updates"))
     #can't proceed if we've already got an $inc updateOps that involves the revisions 
-    if updateOps.__inc? and revisionNames.some((name) -> updateOps.__inc["revision.#{name}"])
+    if updateOps.$inc? and revisionNames.some((name) -> updateOps.$inc["revision.#{name}"])
         return done(new Error("can't #{instructionName} with revisions #{revisionNames} when there are already $inc operations on the revision sub-document"))
     #sames true of the selector if we're going to match an exact version number, this isnt really that precise a check, but it's at least a basic check
     if revisionNumbers? and revisionNames.some((name) -> selector["revision.#{name}"])
@@ -861,9 +852,9 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
         if err? then return done(err, false)
 
         #irrespective of whether we've been given required revision numbers, we need their current values written into the transaction right away
-        mongoSelector = _mongolize(selector)
+        mongoSelector = _clone(selector)
         if rollbackProjector?
-            mongoProjector = _mongolize(rollbackProjector)
+            mongoProjector = _clone(rollbackProjector)
             mongoProjector._id = 1
             #always get the revision sub-doc - whittle this down to just the revisions of interest during rollback
             mongoProjector.revision = 1
@@ -910,7 +901,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
 
                 executeUpdate = () ->
                     options = _makeUpdateOptions(onlyOne, isUpsert)
-                    mongoUpdateOps = _mongolize(updateOps)
+                    mongoUpdateOps = _clone(updateOps)
                     if revisionNames.length > 0
                         mongoUpdateOps.$inc ?= {}
                         mongoUpdateOps.$inc["revision.#{revisionName}"] = 1 for revisionName in revisionNames
@@ -1005,15 +996,15 @@ _updateOpRollback = (onlyOne, isUpsert, config, transaction, state, collectionNa
                         #make a list of fields to unset
                         #must include any operation that sets a field which wasnt in state.updated; take care of rename
                         originalDotPaths = ( key for key, value of mongoRollbackOps.$set when key.indexOf('revision.') isnt 0)
-                        settyOperators = ['__inc', '__setOnInsert', '__set', '__addToSet', '__push', '__bit']
+                        settyOperators = ['$inc', '$setOnInsert', '$set', '$addToSet', '$push', '$bit']
                         updatedDotPaths = []
                         for op in settyOperators
                             if updateOps[op]?
                                 updatedDotPaths.push(path) for path of updateOps[op]
                         unsetDotPaths = ( path for path in updatedDotPaths when path not in originalDotPaths )
                         #$rename is a special case, it's the rename-to field that we're interested
-                        if updateOps['__rename']?
-                            renamedTo = ( to for from, to of updateOps['__rename'] )
+                        if updateOps['$rename']?
+                            renamedTo = ( to for from, to of updateOps['$rename'] )
                             unsetDotPaths.push(to) for to in renamedTo when to not in originalDotPaths
                         for path in unsetDotPaths
                             mongoRollbackOps.$unset[path] = 1

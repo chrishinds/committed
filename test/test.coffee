@@ -432,7 +432,7 @@ describe 'Committed', ->
                 {name: 'db.insert', arguments: ['rollbackTest', doc]}
                 {name: 'failMethod'}
             ], [
-                {name: 'db.updateOneOp', arguments: ['rollbackTest', doc, {__set: rolledback: true}, {}]}
+                {name: 'db.updateOneOp', arguments: ['rollbackTest', doc, {$set: rolledback: true}, {}]}
                 {name: 'db.pass'}
             ]
             committed.enqueue transaction, (err, status) ->
@@ -635,7 +635,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                     {
                         name: 'db.updateOneOp'
-                        arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gt: 2}}, {__inc: j: 1} ]
+                        arguments: ['instructionsTest', {_id: {$in: ids}, i: {$gt: 2}}, {$inc: j: 1} ]
                     }
                 ]
                 committed.enqueue update, (err,status) ->
@@ -661,7 +661,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                         {
                             name: 'db.updateOneOp'
-                            arguments: ['instructionsTest', {_id: {__in: ids}, i: {__gt: 2}}, {__inc: j: 1} ]
+                            arguments: ['instructionsTest', {_id: {$in: ids}, i: {$gt: 2}}, {$inc: j: 1} ]
                         }, {
                             name: 'failMethod'
                         }
@@ -692,12 +692,12 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                         {
                             name: 'db.updateOneOp'
-                            arguments: ['instructionsTest', {_id: doc._id}, {__inc: j: 1}, {}, 'content' ]
+                            arguments: ['instructionsTest', {_id: doc._id}, {$inc: j: 1}, {}, 'content' ]
                         }, 
                         {
                             name: 'db.updateOneOp'
                             # revision.content isn't now 0, it's been incremented by the previous instruction
-                            arguments: ['instructionsTest', {_id: doc._id}, {__inc: j: 1}, {}, {'content': 0} ]
+                            arguments: ['instructionsTest', {_id: doc._id}, {$inc: j: 1}, {}, {'content': 0} ]
                         }
                     ]
                 committed.enqueue update, (err,status) ->
@@ -724,7 +724,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                         {
                             name: 'db.updateOneOp'
-                            arguments: ['instructionsTest', {_id: doc._id}, {__set: j: 1}, {}, 'content' ]
+                            arguments: ['instructionsTest', {_id: doc._id}, {$set: j: 1}, {}, 'content' ]
                         }
                     ]
                 committed.enqueue update, (err,status) ->
@@ -884,7 +884,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                     {
                         name: 'db.updateManyOp'
-                        arguments: ['instructionsTest', {_id: __in: ids}, {__inc: j: 1} ]
+                        arguments: ['instructionsTest', {_id: $in: ids}, {$inc: j: 1} ]
                     }
                 ]
                 committed.enqueue update, (err,status) ->
@@ -911,7 +911,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                     {
                         name: 'db.updateManyOp'
-                        arguments: ['instructionsTest', {_id: __in: ids}, {__inc: j: 1} ]
+                        arguments: ['instructionsTest', {_id: $in: ids}, {$inc: j: 1} ]
                     }, {
                         name: 'failMethod'
                     }
@@ -940,7 +940,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                     {
                         name: 'db.upsertOneOp'
-                        arguments: ['instructionsTest', {my_date: doc.my_date}, {__set: updated: true} ]
+                        arguments: ['instructionsTest', {my_date: doc.my_date}, {$set: updated: true} ]
                     }
                 ]
                 committed.enqueue update, (err,status) ->
@@ -961,7 +961,7 @@ describe 'Committed', ->
             upsert = committed.transaction "test", 'user', [
                 {
                     name: 'db.upsertOneOp'
-                    arguments: ['instructionsTest', {_id: _id}, {__set: inserted: true} ]
+                    arguments: ['instructionsTest', {_id: _id}, {$set: inserted: true} ]
                 }
             ]
             committed.enqueue upsert, (err,status) ->
@@ -987,7 +987,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                     {
                         name: 'db.upsertOneOp'
-                        arguments: ['instructionsTest', {my_date: doc.my_date}, {__set: updated: true} ]
+                        arguments: ['instructionsTest', {my_date: doc.my_date}, {$set: updated: true} ]
                     }, {
                         name: 'failMethod'
                     }
@@ -1009,7 +1009,7 @@ describe 'Committed', ->
             upsert = committed.transaction "test", 'user', [
                 {
                     name: 'db.upsertOneOp'
-                    arguments: ['instructionsTest', {_id: _id}, {__set: inserted: true} ]
+                    arguments: ['instructionsTest', {_id: _id}, {$set: inserted: true} ]
                 }, {
                     name: 'failMethod'
                 }
@@ -1476,7 +1476,7 @@ describe 'Committed', ->
                             update = committed.transaction "a_queue", 'user', [
                                 {
                                     name: 'db.updateOneOp'
-                                    arguments: ['functionTest', {_id: {__in: ids}, i: {__gt: 2}}, {__inc: j: 1} ]
+                                    arguments: ['functionTest', {_id: {$in: ids}, i: {$gt: 2}}, {$inc: j: 1} ]
                                 }
                             ]
                             return done(null, update)
@@ -1523,19 +1523,19 @@ describe 'Committed', ->
                         update = committed.transaction "queue", 'user', [
                             {
                                 name: 'db.updateOneOp'
-                                arguments: ['functionTest', {_id: doc._id, i: 1}, {__inc: i: 1} ]
+                                arguments: ['functionTest', {_id: doc._id, i: 1}, {$inc: i: 1} ]
                             }
                         ]
                         update_2 = committed.transaction "queue_2", 'user', [
                             {
                                 name: 'db.updateOneOp'
-                                arguments: ['functionTest', {_id: doc._id, i: 2}, {__inc: i: 1} ]
+                                arguments: ['functionTest', {_id: doc._id, i: 2}, {$inc: i: 1} ]
                             }
                         ]
                         update_3 = committed.transaction "queue_3", 'user', [
                             {
                                 name: 'db.updateOneOp'
-                                arguments: ['functionTest', {_id: doc._id, i:3}, {__inc: i: 1} ]
+                                arguments: ['functionTest', {_id: doc._id, i:3}, {$inc: i: 1} ]
                             }
                         ]
                         myChain = committed.chain([update, update_2, update_3])
@@ -1564,7 +1564,7 @@ describe 'Committed', ->
                 return done(null, insert)
             upWriter = committed.writer 'queue_2', (done) ->
                 update = committed.transaction "queue_2", 'user', [
-                    name: 'db.updateOneOp', arguments: ['functionTest', {_id: doc._id, i: 1}, {__inc: i: 1} ]
+                    name: 'db.updateOneOp', arguments: ['functionTest', {_id: doc._id, i: 1}, {$inc: i: 1} ]
                 ]
                 return done(null, update)
             makeChain = () ->
@@ -1650,7 +1650,7 @@ describe 'Committed', ->
                 update = committed.transaction "test", 'user', [
                     {
                         name: 'db.updateManyOp'
-                        arguments: ['resultsTest', {_id: __in: ids}, {__inc: j: 1} ]
+                        arguments: ['resultsTest', {_id: $in: ids}, {$inc: j: 1} ]
                     }
                 ]
                 committed.enqueue update, (err, status, updated) ->
@@ -1663,9 +1663,9 @@ describe 'Committed', ->
             docs = ( {i: i} for i in [1,2,3] )
             update = committed.transaction "test", 'user', [
                 {name: 'db.insert', arguments: ['resultsTest', docs]}
-                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 1}, {__inc: j: 1} ]}
-                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 2}, {__inc: j: 1} ]}
-                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
+                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 1}, {$inc: j: 1} ]}
+                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 2}, {$inc: j: 1} ]}
+                {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 3}, {$inc: j: 1} ]}
             ]
             committed.enqueue update, (err, status, a, b, c) ->
                 should.not.exist err
@@ -1680,9 +1680,9 @@ describe 'Committed', ->
             writer = committed.writer "test", (writerDone) ->
                 update = committed.transaction "test", 'user', [
                     {name: 'db.insert', arguments: ['resultsTest', docs]}
-                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 1}, {__inc: j: 1} ]}
-                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 2}, {__inc: j: 1} ]}
-                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 1}, {$inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 2}, {$inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 3}, {$inc: j: 1} ]}
                 ]
                 writerDone(null, update, 'my writer result')
             committed.enqueue writer, (err, status, s, a, b, c) ->
@@ -1699,13 +1699,13 @@ describe 'Committed', ->
             writer = committed.writer "test", (writerDone) ->
                 update1 = committed.transaction "test", 'user', [
                     {name: 'db.insert', arguments: ['resultsTest', docs]}
-                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 1}, {__inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 1}, {$inc: j: 1} ]}
                 ]
                 update2 = committed.transaction "test2", 'user', [
-                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 2}, {__inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 2}, {$inc: j: 1} ]}
                     #this instruction wont return anything
-                    {name: 'db.updateOneOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
-                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: __gte: 3}, {__inc: j: 1} ]}
+                    {name: 'db.updateOneOp', arguments: ['resultsTest', {i: $gte: 3}, {$inc: j: 1} ]}
+                    {name: 'db.updateManyOp', arguments: ['resultsTest', {i: $gte: 3}, {$inc: j: 1} ]}
                 ]
                 chain = committed.chain [update1, update2]
                 writerDone(null, chain, 'my writer result')

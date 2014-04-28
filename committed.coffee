@@ -19,6 +19,10 @@ _transactionsCollection = null
 _pkFactory = null
 _config = {}
 
+#Set up cloning, promise not to create circular references in exchange for performance
+Clone = require('clone')
+_clone = (x) -> Clone(x, false)
+
 class DefaultPkFactory
     createPk: () ->
         new ObjectID()
@@ -132,7 +136,7 @@ exports.start = (config, done) ->
         #position. Find such chains, shift them, write them back, execute in
         #the next task
         _inSeries( 
-            _transactionsCollection.find({status:'Committed', "after.0.status":'Queued'}, {snapshot: true})
+            _transactionsCollection.find({status:'Committed', "after.0.status":'Queued'})
             , (transaction, transactionDone) ->
                 _shiftChain(transaction)
                 return _transactionsCollection.save transaction, {w:1, journal: true}, (err, result) ->
@@ -570,32 +574,6 @@ _updateTransactionState = (transaction, done) ->
     _transactionsCollection.update { _id: transaction._id }, {$set: 'execution.state': transaction.execution.state}, updateOneOptions, (err,updated) ->
         if not err? and updated isnt 1 then err = new Error("transaction not correctly updated with instruction state before insert")
         done(err)
-
-_clone = (obj) ->
-
-
-    if not obj? or typeof obj isnt 'object'
-        return obj
-
-    if obj instanceof Array
-        return ( _clone(x) for x in obj )
-
-    if obj instanceof Date
-        return new Date(obj.getTime()) 
-
-    if obj instanceof RegExp
-        flags = ''
-        flags += 'g' if obj.global?
-        flags += 'i' if obj.ignoreCase?
-        flags += 'm' if obj.multiline?
-        flags += 'y' if obj.sticky?
-        return new RegExp(obj.source, flags) 
-
-    newInstance = new obj.constructor()
-    for key,value of obj
-        newInstance[key] = _clone(value)
-
-    return newInstance
 
 
 #this is used to change a partial object into an array of mongo-dot-notation pairs

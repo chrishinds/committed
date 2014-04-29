@@ -13,7 +13,7 @@ Soon
 - pre-transaction-store hook for each instruction, to be used for id generation (for new docs or new revisions), will save the extra transaction collection write 
 - transaction-token feature, to allow optional expiry of transactions based on reads which were in-progress during a global-lock transaction. 
 - rollbackProjection needs to respect elemMatch, otherwise there are lots of circumstances where too much state is saved
-- rollback info could be removed when state is updated: possibly a better solution to the state inflation problem, maybe have this on a config flag. 
+- rollback info to be removed when state is updated with committed status: possibly a better solution to the state inflation problem than tricksy projection processing, maybe have this on a config flag. 
 
 Later
 -----

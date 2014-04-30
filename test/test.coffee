@@ -740,6 +740,22 @@ describe 'Committed', ->
                             result.j.should.equal 1
                             done()
 
+        it 'updateOneOp should fail, when no documents match the selector', (done) ->
+            update = committed.transaction "test", {}, [
+                {
+                    name: 'db.updateOneOp'
+                    arguments: ['instructionsTest', {mikey: $exists: true}, {mikey: 'should not be here'} ]
+                }
+            ]
+            committed.enqueue update, (err,status) ->
+                should.not.exist err
+                status.should.be.string 'Failed'
+                _db.collection 'instructionsTest', (err, collection) ->
+                    collection.count {mikey: $exists: true}, (err, count) ->
+                        should.not.exist err
+                        count.should.equal 0
+                        done()
+
         it 'updateOneOp should use a projection for rollback when specified'
 
         it 'updateOneOp should return errors when given a bad updateOps object'
@@ -928,6 +944,22 @@ describe 'Committed', ->
                                 d.revision.otherContent.should.equal 1
                                 should.not.exist d.j
                             done()
+
+        it 'updateManyOp should update no documents, when no documents match the selector, without failing', (done) ->
+            update = committed.transaction "test", {}, [
+                {
+                    name: 'db.updateManyOp'
+                    arguments: ['instructionsTest', {mikey: $exists: true}, {mikey: 'should not be here'} ]
+                }
+            ]
+            committed.enqueue update, (err,status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'instructionsTest', (err, collection) ->
+                    collection.count {mikey: $exists: true}, (err, count) ->
+                        should.not.exist err
+                        count.should.equal 0
+                        done()
 
         it 'upsertOneOp should update a document', (done) ->
             doc = my_date: new Date()

@@ -1115,7 +1115,7 @@
         if (err != null) {
           return done(err, null);
         }
-        if ((onlyOne && docs.length > 1) || (!isUpsert && docs.length === 0)) {
+        if ((onlyOne && !isUpsert && docs.length !== 1) || (isUpsert && docs.length > 1)) {
           transaction.execution.info.push("" + instructionName + " can update only one document, using " + (JSON.stringify(mongoSelector)) + " " + docs.length + " were found");
           return done(null, false);
         } else if (isUpsert && docs.length === 0) {
@@ -1155,7 +1155,7 @@
               if (err != null) {
                 return done(err, null);
               }
-              if (onlyOne && updated !== 1) {
+              if ((onlyOne || isUpsert) && updated !== 1) {
                 transaction.execution.info.push("" + instructionName + " can update only one document, using " + (JSON.stringify(mongoSelector)) + " " + updated + " were updated");
                 return done(null, false);
               }

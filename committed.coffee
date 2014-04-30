@@ -853,7 +853,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
         collection.find(mongoSelector, mongoProjector).toArray (err, docs) ->
             if err? then return done(err, null)
             #look at the search results and see if these are consistent with the instruction we've been asked to execute
-            if (onlyOne and docs.length > 1) or (not isUpsert and docs.length is 0)
+            if (onlyOne and not isUpsert and docs.length isnt 1) or (isUpsert and docs.length > 1)
                 #the instruction has failed, we must find exactly one doc
                 transaction.execution.info.push "#{instructionName} can update only one document, using #{JSON.stringify mongoSelector} #{docs.length} were found"
                 return done(null, false) 
@@ -894,7 +894,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
                     #used to ensure isolation.
                     collection.update mongoSelector, mongoUpdateOps, options, (err, updated) ->
                         if err? then return done(err, null)
-                        if onlyOne and updated isnt 1 
+                        if (onlyOne or isUpsert) and updated isnt 1 
                             transaction.execution.info.push """
                                 #{instructionName} can update only one document, using #{JSON.stringify mongoSelector} #{updated} were updated
                                 """

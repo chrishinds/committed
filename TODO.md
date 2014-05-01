@@ -4,11 +4,14 @@ Todo
 Now
 ---
 
-- fill in pending instruction tests
+
 
 Soon
 ----
 
+- mongo 2.6 compatibility (dunder issue #2)
+- CI server to sustain 2.4 & 2.6
+- fill in pending instruction tests
 - findAndModify instruction
 - pre-transaction-store hook for each instruction, to be used for id generation (for new docs or new revisions), will save the extra transaction collection write 
 - transaction-token feature, to allow optional expiry of transactions based on reads which were in-progress during a global-lock transaction. 

@@ -371,22 +371,31 @@ _setUpTransaction = (transaction) ->
     transaction.execution.state.push {} for i in transaction.instructions
 
 
-#internal enqueue function which skips the _state='stopped' check so that chains can proceed to completion after stop is called
-_enqueue = (transaction, done) ->
-    transaction.enqueuedAt = new Date()
-    if transaction.queue is "GlobalLock"
-        return done( new Error("Can't queue a transaction for GlobalLock using the committed.enqueue function"), null)
-    if not transaction.queue?.length
-        return done( new Error("must have a transaction.queue parameter to use committed.enqueue"), null)
-    error = _checkTransaction(transaction)
-    if error? then return done( error, null ) 
+_checkForChain = (transactionArg, done) ->
+    try
+        transaction = if Array.isArray transactionArg then exports.chain(transactionArg) else transactionArg
+    catch error
+        return done(error)
+    return done(null, transaction)
 
-    transaction.status = 'Queued'
-    #important not to involve 'stopped' or 'started' in this conditional
-    if _state isnt 'locked'
-        return _enqueueAndHandleChains transaction, done
-    else
-        _pending.push [transaction, done]
+#internal enqueue function which skips the _state='stopped' check so that chains can proceed to completion after stop is called
+_enqueue = (transactionArg, done) ->
+    _checkForChain transactionArg, (err, transaction) ->
+        if err? then return done(err)
+        transaction.enqueuedAt = new Date()
+        if transaction.queue is "GlobalLock"
+            return done( new Error("Can't queue a transaction for GlobalLock using the committed.enqueue function"), null)
+        if not transaction.queue?.length
+            return done( new Error("must have a transaction.queue parameter to use committed.enqueue"), null)
+        error = _checkTransaction(transaction)
+        if error? then return done( error, null ) 
+
+        transaction.status = 'Queued'
+        #important not to involve 'stopped' or 'started' in this conditional
+        if _state isnt 'locked'
+            return _enqueueAndHandleChains transaction, done
+        else
+            _pending.push [transaction, done]
 
 
 exports.enqueue = (transaction, done) ->
@@ -417,29 +426,33 @@ _executeImmediate = (transaction, done) ->
         _immediateCounter -= 1
         done(err, status, etc...)
 
-_immediately = (transaction, done) ->
-    transaction.enqueuedAt = new Date()
-    if transaction.queue?
-        return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it") )
-    error = _checkTransaction(transaction)
-    if error? then return done( error, null ) 
+_immediately = (transactionArg, done) ->
+    _checkForChain transactionArg, (err, transaction) ->
+        if err? then return done(err)
+        transaction.enqueuedAt = new Date()
+        if transaction.queue?
+            return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it") )
+        error = _checkTransaction(transaction)
+        if error? then return done( error, null ) 
 
-    if _state isnt 'locked'
-        transaction.status = 'Queued'
-        transaction.position = -1
-        _setUpTransaction(transaction)
-        return _executeImmediate(transaction, done)
-    else
-        _pendingImmediate.push [transaction, done]
+        if _state isnt 'locked'
+            transaction.status = 'Queued'
+            transaction.position = -1
+            _setUpTransaction(transaction)
+            return _executeImmediate(transaction, done)
+        else
+            _pendingImmediate.push [transaction, done]
 
 
-_withGlobalLock = (transaction, done) ->
-    if transaction.queue isnt "GlobalLock"
-        return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
-    error = _checkTransaction(transaction)
-    if error? then return done( error, null ) 
-    transaction.enqueuedAt = new Date()
-    return _enqueueAndHandleChains transaction, done
+_withGlobalLock = (transactionArg, done) ->
+    _checkForChain transactionArg, (err, transaction) ->
+        if err? then return done(err)
+        if transaction.queue isnt "GlobalLock"
+            return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
+        error = _checkTransaction(transaction)
+        if error? then return done( error, null ) 
+        transaction.enqueuedAt = new Date()
+        return _enqueueAndHandleChains transaction, done
 
 
 
@@ -1276,9 +1289,13 @@ exports.transaction = (queueName, additionalFields, instructions, rollback) ->
 # intervals. Failure will return 'FailedChain' to the caller. 'Committed' will
 # be returned to the caller once all transactions in the chain are finished.
 
-exports.chain = (transactions) ->
-    if not Array.isArray(transactions) or transactions.length is 0
+exports.chain = (transactionsArg) ->
+    if not Array.isArray(transactionsArg)
         throw new Error("to chain transactions an array of transactions must be provided")
+    #it is convenient to weed out nulls from a transaction list
+    transactions = ( t for t in transactionsArg when t? )
+    if transactions.length is 0
+        throw new Error("a chain can't be made from an empty array (once nulls have been removed)")
     if transactions.some((x) -> typeof x is 'function')
         throw new Error("cannot form a chain from reader/writer functions; chains must be composed of only transaction objects")
     first = transactions[0]

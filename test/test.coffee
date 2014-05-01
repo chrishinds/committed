@@ -1321,6 +1321,37 @@ describe 'Committed', ->
                         docs.length.should.equal 6
                         done()
 
+        it 'should be possible to enqueue arrays of transactions with nulls in directly without manually forming a chain', (done) ->
+            bigT = 
+                [
+                    committed.transaction 'q1', {}, [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    committed.transaction 'q2', {}, [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                , 
+                    null
+                ,
+                    committed.transaction 'q3', {}, [
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                        {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
+                    ]
+                ]
+
+            committed.enqueue bigT, (err, status) ->
+                should.not.exist err
+                status.should.equal 'Committed'
+                _db.collection 'chainedTest', {strict:true}, (err, collection) ->
+                    should.not.exist err
+                    collection.find({execute: 'all'}).toArray (err, docs) ->
+                        docs.length.should.equal 6
+                        done()
+
+
     describe 'restart', ->
         
         beforeEach (done) ->

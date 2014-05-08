@@ -695,14 +695,14 @@ commit = (transactionOrFunction, done) ->
                     #if a string is returned then this should be the overall status of the transaction
                     return done(err, transactionOrFunction, transactionOrString, results...)
                 else
+                    #now we have a transaction, look at any err produced during the execution of the function and return it.
+                    if err? then return done(err, transactionOrString)
                     #we have been given a transaction or chain as a result of calling our function.
                     if Array.isArray(transactionOrString)
                         #then we have been given a chain so make it into a transaction first
                         transaction = exports.chain transactionOrString
                     else
                         transaction = transactionOrString
-                    #now we have a transaction, look at any err produced during the execution of the function and return it.
-                    if err? then return done(err, transaction)
                     #ensure that the queue specified on the original function is the same as that of the produced transaction
                     if transaction.queue isnt transactionOrFunction.queue
                         return done( new Error("""

@@ -916,13 +916,13 @@
           if (typeof transactionOrString === 'string' || transactionOrString instanceof String || (transactionOrString == null)) {
             return done.apply(null, [err, transactionOrFunction, transactionOrString].concat(__slice.call(results)));
           } else {
+            if (err != null) {
+              return done(err, transactionOrString);
+            }
             if (Array.isArray(transactionOrString)) {
               transaction = exports.chain(transactionOrString);
             } else {
               transaction = transactionOrString;
-            }
-            if (err != null) {
-              return done(err, transaction);
             }
             if (transaction.queue !== transactionOrFunction.queue) {
               return done(new Error("transaction producing function assigned to a different queue from that of the transaction it produced \n(" + transaction.queue + " isnt " + transactionOrFunction.queue + ")"), transaction);

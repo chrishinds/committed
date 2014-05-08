@@ -701,6 +701,8 @@ commit = (transactionOrFunction, done) ->
                         transaction = exports.chain transactionOrString
                     else
                         transaction = transactionOrString
+                    #now we have a transaction, look at any err produced during the execution of the function and return it.
+                    if err? then return done(err, transaction)
                     #ensure that the queue specified on the original function is the same as that of the produced transaction
                     if transaction.queue isnt transactionOrFunction.queue
                         return done( new Error("""

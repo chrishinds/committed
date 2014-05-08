@@ -921,6 +921,9 @@
             } else {
               transaction = transactionOrString;
             }
+            if (err != null) {
+              return done(err, transaction);
+            }
             if (transaction.queue !== transactionOrFunction.queue) {
               return done(new Error("transaction producing function assigned to a different queue from that of the transaction it produced \n(" + transaction.queue + " isnt " + transactionOrFunction.queue + ")"), transaction);
             }

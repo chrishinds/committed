@@ -1681,6 +1681,16 @@ describe 'Committed', ->
                 should.not.exist status
                 done()
 
+        it 'a writer should pass through an error when the function produces one, even if a transaction is returned', (done) ->
+            badWriter = committed.writer 'queue', (done) ->
+                t = committed.transaction "queue", {}, [name: 'db.insert', arguments: ['functionTest', {foo: 1}]]
+                return done(new Error("this is my error"), t)
+            committed.enqueue badWriter, (err, status) ->
+                should.exist err
+                err.message.should.be.string "this is my error"
+                should.not.exist status
+                done()
+
         it 'a reader should pass through an error when its function produces one', (done) ->
             myReader = committed.reader 'queue', (readerDone) ->
                 readerDone(new Error("my error"))

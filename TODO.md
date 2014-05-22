@@ -17,6 +17,7 @@ Soon
 - transaction-token feature, to allow optional expiry of transactions based on reads which were in-progress during a global-lock transaction. 
 - rollbackProjection needs to respect elemMatch, otherwise there are lots of circumstances where too much state is saved
 - rollback info to be removed when state is updated with committed status: possibly a better solution to the state inflation problem than tricksy projection processing, maybe have this on a config flag. 
+- update instr to increment revisions already on an object if none are explicitly given?
 
 Later
 -----

@@ -1027,6 +1027,7 @@ _updateOpRollback = (onlyOne, isUpsert, config, transaction, state, collectionNa
                         #general rollback failure
                         transaction.execution.info.push """
                             updateOneOpRollback found too many documents (#{count}) when trying to find out if an updateOneOp had occurred
+                            using selector #{JSON.stringify revisionSelector}
                             """
                         return rollbackDone(null, false)
 
@@ -1185,7 +1186,7 @@ exports.db =
                 #this will also confirm that in the event of rollback we'll be writing something valid.
                 if count isnt 1
                     transaction.execution.info.push """
-                        updateOneDoc failed to find exactly one document (found #{count}) matching the given oldPartialDocument using #{oldSelector})
+                        updateOneDoc failed to find exactly one document (found #{count}) matching the given oldPartialDocument using #{JSON.stringify oldSelector})
                         """
                     return done(null, false)
                 #if we find exactly one match then our revision requirement is met, we should record the fact that the instruction is safe to proceed
@@ -1199,11 +1200,12 @@ exports.db =
                     #update all the relevant revisions
                     mongoOps.$inc["revision.#{revisionName}"] = 1 for revisionName of oldPartialDocument.revision
                     updateOneOptions = _makeUpdateOptions(true, false)
-                    collection.update {_id: oldPartialDocument._id}, mongoOps, updateOneOptions, (err, updated) ->
+                    selector = {_id: oldPartialDocument._id}
+                    collection.update selector, mongoOps, updateOneOptions, (err, updated) ->
                         if err? then return done(err, null)
                         if updated isnt 1 
                             transaction.execution.info.push """
-                                updateOneDoc must update exactly one document, using #{JSON.stringify mongoOps} #{updated} were updated
+                                updateOneDoc must update exactly one document, using [selector, ops] = #{JSON.stringify [selector, mongoOps]} #{updated} were updated
                                 """
                             return done(null, false) #the instruction has failed
                         return done(null, true)
@@ -1243,11 +1245,12 @@ exports.db =
                         #reset all the relevant revisions
                         mongoOps.$set["revision.#{revisionName}"] = oldPartialDocument.revision[revisionName] for revisionName of oldPartialDocument.revision
                         updateOneOptions = _makeUpdateOptions(true, false)
-                        collection.update {_id: oldPartialDocument._id}, mongoOps, updateOneOptions, (err, updated) ->
+                        updateSelector = {_id: oldPartialDocument._id}
+                        collection.update updateSelector, mongoOps, updateOneOptions, (err, updated) ->
                                 if err? then return done(err, null)
                                 if updated isnt 1 
                                     transaction.execution.info.push """
-                                        updateOneDocRollback must update exactly one document, using #{JSON.stringify mongoOps} #{updated} were updated
+                                        updateOneDocRollback must update exactly one document, using [selector, ops] = #{JSON.stringify [updateSelector, mongoOps]} #{updated} were updated
                                         """
                                     return done(null, false) #the instruction has failed
                                 return done(null, true)

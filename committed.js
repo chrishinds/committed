@@ -1359,7 +1359,7 @@
                 return rollbackDone(null, true);
               });
             } else {
-              transaction.execution.info.push("updateOneOpRollback found too many documents (" + count + ") when trying to find out if an updateOneOp had occurred");
+              transaction.execution.info.push("updateOneOpRollback found too many documents (" + count + ") when trying to find out if an updateOneOp had occurred\nusing selector " + (JSON.stringify(revisionSelector)));
               return rollbackDone(null, false);
             }
           });
@@ -1568,12 +1568,12 @@
             return done(err, false);
           }
           if (count !== 1) {
-            transaction.execution.info.push("updateOneDoc failed to find exactly one document (found " + count + ") matching the given oldPartialDocument using " + oldSelector + ")");
+            transaction.execution.info.push("updateOneDoc failed to find exactly one document (found " + count + ") matching the given oldPartialDocument using " + (JSON.stringify(oldSelector)) + ")");
             return done(null, false);
           }
           state.safeToExecuteInstruction = true;
           return _updateTransactionState(transaction, function(err) {
-            var mongoOps, updateOneOptions;
+            var mongoOps, selector, updateOneOptions;
             if (err != null) {
               return done(err, null);
             }
@@ -1587,14 +1587,15 @@
               mongoOps.$inc["revision." + revisionName] = 1;
             }
             updateOneOptions = _makeUpdateOptions(true, false);
-            return collection.update({
+            selector = {
               _id: oldPartialDocument._id
-            }, mongoOps, updateOneOptions, function(err, updated) {
+            };
+            return collection.update(selector, mongoOps, updateOneOptions, function(err, updated) {
               if (err != null) {
                 return done(err, null);
               }
               if (updated !== 1) {
-                transaction.execution.info.push("updateOneDoc must update exactly one document, using " + (JSON.stringify(mongoOps)) + " " + updated + " were updated");
+                transaction.execution.info.push("updateOneDoc must update exactly one document, using [selector, ops] = " + (JSON.stringify([selector, mongoOps])) + " " + updated + " were updated");
                 return done(null, false);
               }
               return done(null, true);
@@ -1635,7 +1636,7 @@
             selector["revision." + revisionName] = oldPartialDocument.revision[revisionName] + 1;
           }
           return collection.count(selector, function(err, count) {
-            var mongoOps, updateOneOptions;
+            var mongoOps, updateOneOptions, updateSelector;
             if (err != null) {
               return done(err, false);
             }
@@ -1651,14 +1652,15 @@
                 mongoOps.$set["revision." + revisionName] = oldPartialDocument.revision[revisionName];
               }
               updateOneOptions = _makeUpdateOptions(true, false);
-              return collection.update({
+              updateSelector = {
                 _id: oldPartialDocument._id
-              }, mongoOps, updateOneOptions, function(err, updated) {
+              };
+              return collection.update(updateSelector, mongoOps, updateOneOptions, function(err, updated) {
                 if (err != null) {
                   return done(err, null);
                 }
                 if (updated !== 1) {
-                  transaction.execution.info.push("updateOneDocRollback must update exactly one document, using " + (JSON.stringify(mongoOps)) + " " + updated + " were updated");
+                  transaction.execution.info.push("updateOneDocRollback must update exactly one document, using [selector, ops] = " + (JSON.stringify([updateSelector, mongoOps])) + " " + updated + " were updated");
                   return done(null, false);
                 }
                 return done(null, true);

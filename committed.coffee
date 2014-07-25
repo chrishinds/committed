@@ -403,7 +403,7 @@ exports.enqueue = (transaction, done) ->
     #any drains are allowed time to run (eg. there's one on the GlobalLock queue)
     setImmediate () ->
         if _state is 'stopped'
-            return done( new Error("unable to execute transaction immediately, committed was at state '#{_state}'"), null)
+            return done( new Error("unable to enqueue transaction, committed was at state '#{_state}'"), null)
         else
             return _enqueue(transaction, done)
 
@@ -464,7 +464,7 @@ exports.withGlobalLock = (transaction, done) ->
     #previous call. setImmediate will preserve order. 
     setImmediate () ->
         if _state is 'stopped' 
-            return done( new Error("unable to execute transaction immediately, committed was at state '#{_state}'"), null)
+            return done( new Error("unable to execute transaction with Global Lock, committed was at state '#{_state}'"), null)
             return done(null, 'Failed')
         else
             #then this transaction is good to proceed

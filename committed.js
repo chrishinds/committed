@@ -49,6 +49,8 @@
 
   _config = {};
 
+  exports.util = {};
+
   Clone = require('clone');
 
   _clone = function(x) {
@@ -515,7 +517,7 @@
   exports.enqueue = function(transaction, done) {
     return setImmediate(function() {
       if (_state === 'stopped') {
-        return done(new Error("unable to execute transaction immediately, committed was at state '" + _state + "'"), null);
+        return done(new Error("unable to enqueue transaction, committed was at state '" + _state + "'"), null);
       } else {
         return _enqueue(transaction, done);
       }
@@ -588,7 +590,7 @@
   exports.withGlobalLock = function(transaction, done) {
     return setImmediate(function() {
       if (_state === 'stopped') {
-        return done(new Error("unable to execute transaction immediately, committed was at state '" + _state + "'"), null);
+        return done(new Error("unable to execute transaction with Global Lock, committed was at state '" + _state + "'"), null);
         return done(null, 'Failed');
       } else {
         transaction.status = "Queued";
@@ -787,6 +789,12 @@
     });
   };
 
+  exports.util.updateTransactionState = _updateTransactionState;
+
+  exports.util.updateTransactionStatus = _updateTransactionStatus;
+
+  exports.util.pushTransactionError = _pushTransactionError;
+
   _mongoFlatten = function(obj) {
     var flattened, key, otherKey, otherValue, results, value, _i, _len, _ref;
     results = [];
@@ -937,6 +945,9 @@
               }
               transaction.before = transactionOrFunction.before;
               transaction.after = transactionOrFunction.after;
+            }
+            if (transaction.enqueuedAt == null) {
+              transaction.enqueuedAt = transactionOrFunction;
             }
             return _commitCore.apply(null, [transaction].concat(__slice.call(results), [done]));
           }

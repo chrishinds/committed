@@ -740,6 +740,8 @@ commit = (transactionOrFunction, done) ->
                         #copy the writer function's chain onto the object for onward processing. 
                         transaction.before = transactionOrFunction.before
                         transaction.after = transactionOrFunction.after
+                    #finally, a writer should have had an enqueued field, which should be transfered onto the resulting transaction
+                    transaction.enqueuedAt ?= transactionOrFunction
                     #if everything still looks good then do the commit.
                     return _commitCore transaction, results..., done
     else 
@@ -907,7 +909,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
                 #we are updating many documents, so record these.
                 state.updated = docs
 
-             transaction, (err) ->
+            _updateTransactionState transaction, (err) ->
                 if err? then return done(err, null)
                 #now we're safe for a rollback 
 

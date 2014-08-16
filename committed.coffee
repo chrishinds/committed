@@ -19,6 +19,13 @@ _transactionsCollection = null
 _pkFactory = null
 _config = {}
 
+#the util object is a hack to expose internal calls made by instructions, so
+#that externally created intructions can benefit from them. This is made
+#necessary by the absence of a clear framework for writing external instructions
+exports.util = {}
+
+
+
 #Set up cloning, promise not to create circular references in exchange for performance
 Clone = require('clone')
 _clone = (x) -> Clone(x, false)
@@ -589,6 +596,12 @@ _updateTransactionState = (transaction, done) ->
         done(err)
 
 
+#expose these so that external instructions can use them
+exports.util.updateTransactionState = _updateTransactionState
+exports.util.updateTransactionStatus = _updateTransactionStatus
+exports.util.pushTransactionError = _pushTransactionError
+
+
 #this is used to change a partial object into an array of mongo-dot-notation pairs
 _mongoFlatten = (obj) ->
     results = []
@@ -894,7 +907,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
                 #we are updating many documents, so record these.
                 state.updated = docs
 
-            _updateTransactionState transaction, (err) ->
+             transaction, (err) ->
                 if err? then return done(err, null)
                 #now we're safe for a rollback 
 

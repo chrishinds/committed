@@ -681,12 +681,12 @@ _shiftChain = (transaction) ->
     nextTransaction = transaction.after.shift()
     copyTransaction = {}
     for key, value of transaction 
-        if key not in ['before', 'after', '_id']
+        if key not in ['before', 'after', '_id', 'enqueuedAt']
             copyTransaction[key] = value 
             transaction[key] = undefined
     transaction.before.push copyTransaction
     for key, value of nextTransaction
-        if key not in ['before', 'after', '_id']
+        if key not in ['before', 'after', '_id', 'enqueuedAt']
             transaction[key] = value
 
 
@@ -741,7 +741,7 @@ commit = (transactionOrFunction, done) ->
                         transaction.before = transactionOrFunction.before
                         transaction.after = transactionOrFunction.after
                     #finally, a writer should have had an enqueued field, which should be transfered onto the resulting transaction
-                    transaction.enqueuedAt ?= transactionOrFunction
+                    transaction.enqueuedAt = transactionOrFunction.enqueuedAt
                     #if everything still looks good then do the commit.
                     return _commitCore transaction, results..., done
     else 

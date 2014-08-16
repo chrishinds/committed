@@ -890,7 +890,7 @@
     copyTransaction = {};
     for (key in transaction) {
       value = transaction[key];
-      if (key !== 'before' && key !== 'after' && key !== '_id') {
+      if (key !== 'before' && key !== 'after' && key !== '_id' && key !== 'enqueuedAt') {
         copyTransaction[key] = value;
         transaction[key] = void 0;
       }
@@ -899,7 +899,7 @@
     _results = [];
     for (key in nextTransaction) {
       value = nextTransaction[key];
-      if (key !== 'before' && key !== 'after' && key !== '_id') {
+      if (key !== 'before' && key !== 'after' && key !== '_id' && key !== 'enqueuedAt') {
         _results.push(transaction[key] = value);
       } else {
         _results.push(void 0);
@@ -946,9 +946,7 @@
               transaction.before = transactionOrFunction.before;
               transaction.after = transactionOrFunction.after;
             }
-            if (transaction.enqueuedAt == null) {
-              transaction.enqueuedAt = transactionOrFunction;
-            }
+            transaction.enqueuedAt = transactionOrFunction.enqueuedAt;
             return _commitCore.apply(null, [transaction].concat(__slice.call(results), [done]));
           }
         });

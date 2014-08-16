@@ -1,6 +1,6 @@
 {
     "name"   : "committed",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "private": false,
     "author" : "Chris Hinds <chris.hinds@gmail.com>",
     "repository": {

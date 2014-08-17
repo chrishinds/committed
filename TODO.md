@@ -4,6 +4,9 @@ Todo
 Now
 ---
 
+writer transactions which are committed immediately and produce a chain dont callback on chain completion. path of least resistance could be to create a class which looks like async.queue, but which commits immediately, and have a special 'Immediately' queue.
+
+Any chain that produces a global lock transaction will not end up correctly setting the _state=locked flag, hence the queue drain it puts in place may never progress.
 
 
 Soon

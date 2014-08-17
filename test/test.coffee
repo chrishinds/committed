@@ -1708,6 +1708,21 @@ describe 'Committed', ->
                 err.message.should.be.string 'my error'
                 done()
 
+        it 'a writer should be processed immediately', (done) ->
+            myWriter = committed.writer null, (writerDone) ->
+                _db.collection 'functionTest', (err, collection) ->
+                    if err? then return writerDone(err, null)
+                    collection.insert {immediatestuff: 'is good'}, {w:1, journal: true}, (err, objects) ->
+                        if err? then return writerDone(err, null)
+                        writerDone(null, 'Committed')
+            committed.immediately myWriter, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                _db.collection 'functionTest', (err, collection) ->
+                    collection.count {immediatestuff: 'is good'}, (err, count) ->
+                        count.should.equal 1
+                        done()
+
 
     describe 'returning results', (done) ->
         beforeEach (done) ->

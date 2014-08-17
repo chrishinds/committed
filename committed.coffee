@@ -445,7 +445,6 @@ _immediately = (transactionArg, done) ->
         if _state isnt 'locked'
             transaction.status = 'Queued'
             transaction.position = -1
-            _setUpTransaction(transaction)
             return _executeImmediate(transaction, done)
         else
             _pendingImmediate.push [transaction, done]

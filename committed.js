@@ -561,7 +561,6 @@
       if (_state !== 'locked') {
         transaction.status = 'Queued';
         transaction.position = -1;
-        _setUpTransaction(transaction);
         return _executeImmediate(transaction, done);
       } else {
         return _pendingImmediate.push([transaction, done]);

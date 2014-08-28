@@ -46,11 +46,11 @@ describe 'Committed', ->
     describe 'start', ->
 
         it 'should start without error', (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion'}, (err) ->
                 done err
 
         it 'should not start a second time', (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion'}, (err) ->
                 err.message.should.have.string 'committed has already been started'
                 done()
 
@@ -81,7 +81,7 @@ describe 'Committed', ->
     describe 'valid operation', ->
 
         before (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: validOpsTest: ['number']}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: validOpsTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'validOpsTest', done
 
@@ -142,7 +142,7 @@ describe 'Committed', ->
     describe 'global lock', ->
 
         before (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: globalLockTest: ['number']}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: globalLockTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'globalLockTest', done
 
@@ -332,7 +332,7 @@ describe 'Committed', ->
     describe 'stop', ->
 
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: stopTest: ['number']}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: stopTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'stopTest', (err, collection) -> 
                     if err? then return done(err)
@@ -379,7 +379,7 @@ describe 'Committed', ->
             done()
 
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: rollbackTest: ['number']}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: rollbackTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'rollbackTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
@@ -486,7 +486,7 @@ describe 'Committed', ->
     describe 'error handling', ->
 
         before (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, done
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion'}, done
 
         after (done) ->
             committed.stop done
@@ -555,13 +555,13 @@ describe 'Committed', ->
 
                 async.parallel tests, (err) ->
                     if err? then return done(err)
-                    committed.start {db:_db, softwareVersion:'testSoftwareVersion'}, done
+                    committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion'}, done
 
 
     describe 'instructions', ->
 
         beforeEach (done) ->
-            config = {db:_db, softwareVersion:'testSoftwareVersion', revisions: instructionsTest: ['content', 'otherContent']}
+            config = {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: instructionsTest: ['content', 'otherContent']}
             committed.start config, (err) ->
                 should.not.exist err
                 _db.createCollection 'instructionsTest', (err, collection) -> 
@@ -1059,7 +1059,7 @@ describe 'Committed', ->
     describe 'chained transactions', ->
 
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'chainedTest', (err, collection) -> 
                     collection.remove {}, {w:1}, done
@@ -1231,7 +1231,7 @@ describe 'Committed', ->
                     collection.find({execute: 'all'}).toArray (err, docs) ->
                         docs.length.should.equal 6
                         #annoying afterEach does a stop, so start again
-                        committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
+                        committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
                             should.not.exist err
                             done()
 
@@ -1398,7 +1398,7 @@ describe 'Committed', ->
                             itemDone()
                 , (err) ->
                     should.not.exist err
-                    committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
+                    committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
@@ -1459,7 +1459,7 @@ describe 'Committed', ->
                             itemDone()
                 , (err) ->
                     should.not.exist err
-                    committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
+                    committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
@@ -1490,7 +1490,7 @@ describe 'Committed', ->
             _db.collection 'transactions', {strict:true}, (err, collection) ->
                 collection.insert bigT, {w:1, journal: true}, (err, objects) ->
                     should.not.exist err
-                    committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
+                    committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: restartTest: ['number']}, (err) ->
                         should.not.exist err
                         _db.collection 'restartTest', {strict:true}, (err, collection) ->
                             should.not.exist err
@@ -1501,7 +1501,7 @@ describe 'Committed', ->
 
     describe 'function enqueuement', ->
         beforeEach (done) ->
-            committed.start {db:_db, softwareVersion:'testSoftwareVersion', revisions: functionTest: ['number']}, (err) ->
+            committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: functionTest: ['number']}, (err) ->
                 should.not.exist err
                 _db.createCollection 'functionTest', (err, collection) -> 
                     collection.remove {}, {w:1}, done
@@ -1726,7 +1726,7 @@ describe 'Committed', ->
 
     describe 'returning results', (done) ->
         beforeEach (done) ->
-            config = {db:_db, softwareVersion:'testSoftwareVersion', revisions: resultsTest: ['number']}
+            config = {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: resultsTest: ['number']}
             committed.start config, (err) ->
                 should.not.exist err
                 _db.createCollection 'resultsTest', (err, collection) -> 
@@ -1820,7 +1820,7 @@ describe 'Committed', ->
         beforeEach (done) ->
             config = 
                 db:_db
-                softwareVersion:'testSoftwareVersion'
+                MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion'
                 revisions: regexTest: ['number']
                 queueNameRegex: /^foo$|^bar$/
             committed.start config, (err) ->

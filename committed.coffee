@@ -1,6 +1,6 @@
 async = require 'async'
-ObjectID = require('mongodb').ObjectID
-MongoObjects = ( require('mongodb')[t] for t in ['ObjectID', 'Binary', 'Code', 'DBRef', 'Double', 'MinKey', 'MaxKey', 'Symbol', 'Timestamp', 'Long'] )
+ObjectID = null # we#re going to ask for this during start
+MongoObjects = null
 BuiltInObjects = [ Array, Boolean, Date, Number, String, RegExp ]
 
 _state = 'stopped'
@@ -62,7 +62,17 @@ _inSeries = (cursor, fn, done) ->
 
 exports.start = (config, done) ->
     if not config?.db? 
-        return done( new Error("committed must be supplied with at least a config.db during start"))
+        return done( new Error("committed must be supplied with at least a config.db during start") )
+        
+    if not config?.MongoNativeModule?
+        return done( new Error("commited must be supplied with an MongoNativeModule, like require('mongodb')") )
+    ObjectID = config.MongoNativeModule.ObjectID
+    try 
+        new ObjectID()
+    catch e
+        return done( new Error("commited must be supplied with an MongoNativeModule, like require('mongodb')") )
+    MongoObjects = ( config.MongoNativeModule[t] for t in ['ObjectID', 'Binary', 'Code', 'DBRef', 'Double', 'MinKey', 'MaxKey', 'Symbol', 'Timestamp', 'Long'] )
+
     if _state isnt 'stopped'
         return done( new Error("committed has already been started") )
     _softwareVersion = config.softwareVersion
@@ -898,7 +908,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
                     #then put it in the selector, even though we know we wont
                     #find this _id, mongo will combine the selector and
                     #operations to make the new document
-                    state.insertedId = new ObjectID()
+                    state.insertedId = _pkFactory.createPk()
                     selector ?= {}
                     selector._id = state.insertedId
             else if onlyOne

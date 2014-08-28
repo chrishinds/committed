@@ -1,6 +1,6 @@
 {
     "name"   : "committed",
-    "version": "1.0.9",
+    "version": "2.0.0",
     "private": false,
     "author" : "Chris Hinds <chris.hinds@gmail.com>",
     "repository": {
@@ -12,10 +12,10 @@
     },
     "dependencies": {
         "async"                     : "0.2.8",
-        "mongodb"                   : "1.4.2",
         "clone"                   : "0.1.11"
     },
     "devDependencies": {
+        "mongodb"                   : "1.4.2",
         "coffee-script"             : "1.6.3",
         "mocha"                     : "1.9.0",
         "chai"                      : "1.6.0"

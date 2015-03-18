@@ -30,7 +30,7 @@ before (done) ->
         setTimeout (()-> done(null, true)), 1000
     committed.register 'blockingMethod', blockingMethod
     committed.register 'blockingMethodRollback', committed.db.pass
-    
+
     # Connect to the database
     dbaddress = 'mongodb://' + dbconfig.server + '/' + dbconfig.database
 
@@ -38,7 +38,7 @@ before (done) ->
         if err? then done(err)
         else
             _db = db
-            _db.createCollection 'transactions', (err, collection) -> 
+            _db.createCollection 'transactions', (err, collection) ->
                 collection.remove {}, {w:1}, done
 
 describe 'Committed', ->
@@ -203,7 +203,7 @@ describe 'Committed', ->
             committed.register 'globalLockTestMethod', globalLockTestMethod
             committed.register 'globalLockTestMethodRollback', committed.db.pass
             gt = committed.transaction 'GlobalLock', {}, [
-                {name: 'globalLockTestMethod'} 
+                {name: 'globalLockTestMethod'}
             ]
 
             committed.enqueue ot1, (err, status) ->
@@ -271,7 +271,7 @@ describe 'Committed', ->
             committed.register 'pendingTestMethod', pendingTestMethod
             committed.register 'pendingTestMethodRollback', committed.db.pass
             ot = committed.transaction 'Q', {}, [
-                {name: 'pendingTestMethod'} 
+                {name: 'pendingTestMethod'}
             ]
 
             committed.withGlobalLock gt1, (err, status) ->
@@ -312,7 +312,7 @@ describe 'Committed', ->
             committed.register 'pendingImmediateTestMethod', pendingImmediateTestMethod
             committed.register 'pendingImmediateTestMethodRollback', committed.db.pass
             im = committed.transaction null, {}, [
-                {name: 'pendingTestMethod'} 
+                {name: 'pendingTestMethod'}
             ]
 
             committed.withGlobalLock gt1, (err, status) ->
@@ -327,14 +327,14 @@ describe 'Committed', ->
             committed.immediately im, (err, status) ->
                 should.not.exist err
                 status.should.equal 'Committed'
-                done()            
+                done()
 
     describe 'stop', ->
 
         beforeEach (done) ->
             committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: stopTest: ['number']}, (err) ->
                 should.not.exist err
-                _db.createCollection 'stopTest', (err, collection) -> 
+                _db.createCollection 'stopTest', (err, collection) ->
                     if err? then return done(err)
                     collection.remove {}, {w:1}, done
 
@@ -372,7 +372,7 @@ describe 'Committed', ->
             failSlowlyMethod = (config, transaction, state, args, done) ->
                 setTimeout (() -> done(null, false)), 1000
             committed.register 'failSlowlyMethod', failSlowlyMethod
-            
+
             failSlowlyMethodRollback = (config, transaction, state, args, done) ->
                 setTimeout (() -> done(null, true)), 1000
             committed.register 'failSlowlyMethodRollback', failSlowlyMethodRollback
@@ -449,7 +449,7 @@ describe 'Committed', ->
                 {name: 'errorMethod'} #this will error the transaction
             ], [
                 {name: 'errorMethod'}
-                {name: 'errorMethod'} 
+                {name: 'errorMethod'}
             ]
             committed.enqueue transaction, (err, status) ->
                 status.should.equal 'CatastropheCommitErrorRollbackError'
@@ -480,7 +480,7 @@ describe 'Committed', ->
                 status.should.equal 'Failed'
                 _db.collection('rollbackTest').find().toArray (err, docs) ->
                     docs.length.should.equal 0
-                    done() 
+                    done()
 
 
     describe 'error handling', ->
@@ -564,7 +564,7 @@ describe 'Committed', ->
             config = {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: instructionsTest: ['content', 'otherContent']}
             committed.start config, (err) ->
                 should.not.exist err
-                _db.createCollection 'instructionsTest', (err, collection) -> 
+                _db.createCollection 'instructionsTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
 
         afterEach (done) ->
@@ -693,7 +693,7 @@ describe 'Committed', ->
                         {
                             name: 'db.updateOneOp'
                             arguments: ['instructionsTest', {_id: doc._id}, {$inc: j: 1}, {}, 'content' ]
-                        }, 
+                        },
                         {
                             name: 'db.updateOneOp'
                             # revision.content isn't now 0, it's been incremented by the previous instruction
@@ -771,7 +771,7 @@ describe 'Committed', ->
             oldDoc =
                 revision: content: 1
                 content: 'here'
-            newDoc = 
+            newDoc =
                 revision: content: 100000
                 content: 'here again'
             insert = committed.transaction "test"
@@ -794,8 +794,8 @@ describe 'Committed', ->
                             docsInDB.length.should.equal 1
                             should.exist docsInDB[0]._id
                             delete docsInDB[0]._id
-                            docsInDB[0].should.deep.equal 
-                                revision: 
+                            docsInDB[0].should.deep.equal
+                                revision:
                                     content: 2
                                     otherContent: 1
                                 content: 'here again'
@@ -809,7 +809,7 @@ describe 'Committed', ->
             oldDoc =
                 revision: content: 1
                 content: 'here'
-            newDoc = 
+            newDoc =
                 revision: content: 1
                 content: 'here again'
             insert = committed.transaction "test"
@@ -836,8 +836,8 @@ describe 'Committed', ->
                             docsInDB.length.should.equal 1
                             should.exist docsInDB[0]._id
                             delete docsInDB[0]._id
-                            docsInDB[0].should.deep.equal 
-                                revision: 
+                            docsInDB[0].should.deep.equal
+                                revision:
                                     content: 1
                                     otherContent: 1
                                 content: 'here'
@@ -851,7 +851,7 @@ describe 'Committed', ->
             oldDoc =
                 revision: content: 1
                 content: 'here'
-            newDoc = 
+            newDoc =
                 revision: content: 1
                 content: 'here again'
             insert = committed.transaction "test"
@@ -880,8 +880,8 @@ describe 'Committed', ->
                             docsInDB.length.should.equal 1
                             should.exist docsInDB[0]._id
                             delete docsInDB[0]._id
-                            docsInDB[0].should.deep.equal 
-                                revision: 
+                            docsInDB[0].should.deep.equal
+                                revision:
                                     content: 1
                                     otherContent: 1
                                 content: 'here'
@@ -1061,7 +1061,7 @@ describe 'Committed', ->
         beforeEach (done) ->
             committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: chainedTest: ['number']}, (err) ->
                 should.not.exist err
-                _db.createCollection 'chainedTest', (err, collection) -> 
+                _db.createCollection 'chainedTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
 
         afterEach (done) ->
@@ -1074,12 +1074,12 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
@@ -1111,11 +1111,11 @@ describe 'Committed', ->
                     committed.transaction 'q1', {}, [
                         {name: 'chainQueueCheck', arguments: ['q1']}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'chainQueueCheck', arguments: ['q2']}
                     ]
-                , 
+                ,
                     committed.transaction 'q3', {}, [
                         {name: 'chainQueueCheck', arguments: ['q3']}
                     ]
@@ -1154,12 +1154,12 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'failMethod'}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
@@ -1182,12 +1182,12 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'failMethod'}
                     ]
-                , 
+                ,
                     committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
@@ -1210,12 +1210,12 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q3', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
@@ -1242,12 +1242,12 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
@@ -1273,7 +1273,7 @@ describe 'Committed', ->
                     committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: "blockingMethod"}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
@@ -1300,12 +1300,12 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'GlobalLock', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
@@ -1322,18 +1322,18 @@ describe 'Committed', ->
                         done()
 
         it 'should be possible to enqueue arrays of transactions with nulls in directly without manually forming a chain', (done) ->
-            bigT = 
+            bigT =
                 [
                     committed.transaction 'q1', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                         {name: 'db.insert', arguments: ['chainedTest', {execute:'all'}]}
                     ]
-                , 
+                ,
                     null
                 ,
                     committed.transaction 'q3', {}, [
@@ -1353,11 +1353,11 @@ describe 'Committed', ->
 
 
     describe 'restart', ->
-        
+
         beforeEach (done) ->
             _db.createCollection 'transactions', (err, collection) ->
                 collection.remove {}, {w:1}, (err) ->
-                    _db.createCollection 'restartTest', (err, collection) -> 
+                    _db.createCollection 'restartTest', (err, collection) ->
                         collection.remove {}, {w:1}, done
 
         afterEach (done) ->
@@ -1377,14 +1377,14 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ]
                 ]
             )
-            #set positions, the first is an immediate 
+            #set positions, the first is an immediate
             tinyT.position = -1
             littleT.position = 1
             bigT.position = 2
@@ -1427,7 +1427,7 @@ describe 'Committed', ->
                         {name: 'db.insertRollback', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.pass'}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
@@ -1437,7 +1437,7 @@ describe 'Committed', ->
                     ]
                 ]
             )
-            #set positions, the first is an immediate 
+            #set positions, the first is an immediate
             littleT.position = 1
             bigT.position = 2
             doc1 = {_id: ObjectID(), content:'here'}
@@ -1476,7 +1476,7 @@ describe 'Committed', ->
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                     ]
-                , 
+                ,
                     committed.transaction 'q2', {}, [
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
                         {name: 'db.insert', arguments: ['restartTest', {content:'here'}]}
@@ -1497,13 +1497,13 @@ describe 'Committed', ->
                             collection.find({content:'here'}).toArray (err, docs) ->
                                 docs.length.should.equal 2
                                 done()
- 
+
 
     describe 'function enqueuement', ->
         beforeEach (done) ->
             committed.start {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: functionTest: ['number']}, (err) ->
                 should.not.exist err
-                _db.createCollection 'functionTest', (err, collection) -> 
+                _db.createCollection 'functionTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
 
         afterEach (done) ->
@@ -1533,8 +1533,8 @@ describe 'Committed', ->
                 should.not.exist err
                 status.should.be.string 'Committed'
                 myWriter = committed.writer 'a_queue', (done) ->
-                    setTimeout( 
-                        () -> 
+                    setTimeout(
+                        () ->
                             ids = ( d._id for d in docs )
                             update = committed.transaction "a_queue", {}, [
                                 {
@@ -1581,8 +1581,8 @@ describe 'Committed', ->
             ]
             myChain = null
             updateWriter = committed.writer 'queue', (done) ->
-                setTimeout( 
-                    () -> 
+                setTimeout(
+                    () ->
                         update = committed.transaction "queue", {}, [
                             {
                                 name: 'db.updateOneOp'
@@ -1631,7 +1631,7 @@ describe 'Committed', ->
                 ]
                 return done(null, update)
             makeChain = () ->
-                committed.chain [inWriter, upWriter] 
+                committed.chain [inWriter, upWriter]
             makeChain.should.throw(Error)
             done()
 
@@ -1729,7 +1729,7 @@ describe 'Committed', ->
             config = {db:_db, MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion', revisions: resultsTest: ['number']}
             committed.start config, (err) ->
                 should.not.exist err
-                _db.createCollection 'resultsTest', (err, collection) -> 
+                _db.createCollection 'resultsTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
 
         afterEach (done) ->
@@ -1813,24 +1813,24 @@ describe 'Committed', ->
                 a.should.equal 3
                 b.should.equal 2
                 c.should.equal 1
-                done()                
+                done()
 
     describe 'regex queue name checks', ->
-        
+
         beforeEach (done) ->
-            config = 
+            config =
                 db:_db
                 MongoNativeModule: mongodb, softwareVersion:'testSoftwareVersion'
                 revisions: regexTest: ['number']
                 queueNameRegex: /^foo$|^bar$/
             committed.start config, (err) ->
                 should.not.exist err
-                _db.createCollection 'regexTest', (err, collection) -> 
+                _db.createCollection 'regexTest', (err, collection) ->
                     collection.remove {}, {w:1}, done
 
         afterEach (done) ->
             committed.stop done
-        
+
         it 'should run a transaction which passes the queue name regex', (done) ->
             doc = {t:'t', q:'q'}
             transaction = committed.transaction "foo", {}, [
@@ -1856,3 +1856,20 @@ describe 'Committed', ->
             committed.enqueue transaction, (err, status) ->
                 err.toString().should.equal "Error: transaction.queue name baz does not match required regex /^foo$|^bar$/"
                 done()
+
+        it 'should run a transaction immediately regardless of the regex', (done) ->
+            doc = {t:'t-im', q:'q-im'}
+            transaction = committed.transaction null, {}, [
+                {name: 'db.insert', arguments: ['regexTest', doc]}
+            ]
+            committed.immediately transaction, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                should.exist(doc._id)
+                _db.collection 'regexTest', (err, collection) ->
+                    should.not.exist err
+                    collection.findOne {_id: doc._id}, (err, docInDB) ->
+                        should.not.exist err
+                        doc.t.should.equal docInDB.t
+                        doc.q.should.equal docInDB.q
+                        done()

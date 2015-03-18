@@ -410,7 +410,7 @@
     if ((transaction.status != null) && transaction.status !== 'Queued') {
       return new Error("Can't queue a transaction which is at a status other than Queued (or null)");
     }
-    if ((_config.queueNameRegex != null) && !_config.queueNameRegex.test(transaction.queue)) {
+    if ((transaction.queue != null) && (_config.queueNameRegex != null) && !_config.queueNameRegex.test(transaction.queue)) {
       return new Error("transaction.queue name " + transaction.queue + " does not match required regex " + (_config.queueNameRegex.toString()));
     }
     if (typeof transaction !== 'function') {

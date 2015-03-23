@@ -888,6 +888,180 @@ describe 'Committed', ->
                                 otherContent: "other"
                             done()
 
+
+
+
+
+
+        it 'updateOneDoc should remove a simple key from a document at root level', (done) ->
+            insertDoc =
+                content: 'here'
+                deleteme: 'please'
+                otherContent: "don't touch this"
+            oldDoc =
+                revision: content: 1
+                content: 'here'
+                deleteme: 'please'
+            newDoc =
+                revision: content: 100000
+                content: 'here again'
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', insertDoc]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = insertDoc._id
+                update = committed.transaction "test", {}
+                update.instructions.push
+                    name: 'db.updateOneDoc'
+                    arguments: ['instructionsTest', newDoc, oldDoc]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({content:"here again"}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            should.exist docsInDB[0]._id
+                            delete docsInDB[0]._id
+                            docsInDB[0].should.deep.equal
+                                revision:
+                                    content: 2
+                                    otherContent: 1
+                                content: 'here again'
+                                otherContent: "don't touch this"
+                            done()
+
+
+        it 'updateOneDoc should remove a complex key from a document at root level', (done) ->
+            insertDoc =
+                content: 'here'
+                deleteme: {this: be: complex: 1}
+                otherContent: "don't touch this"
+            oldDoc =
+                revision: content: 1
+                content: 'here'
+                deleteme: {this: be: complex: 1}
+            newDoc =
+                revision: content: 100000
+                content: 'here again'
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', insertDoc]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = insertDoc._id
+                update = committed.transaction "test", {}
+                update.instructions.push
+                    name: 'db.updateOneDoc'
+                    arguments: ['instructionsTest', newDoc, oldDoc]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({content:"here again"}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            should.exist docsInDB[0]._id
+                            delete docsInDB[0]._id
+                            docsInDB[0].should.deep.equal
+                                revision:
+                                    content: 2
+                                    otherContent: 1
+                                content: 'here again'
+                                otherContent: "don't touch this"
+                            done()
+
+
+         it 'updateOneDoc should do an update involving removing and setting a key within a complex subdoc', (done) ->
+            insertDoc =
+                content: 'here'
+                updateme: {this: be: complex: for: sure: 1}
+                otherContent: "don't touch this"
+            oldDoc =
+                revision: content: 1
+                content: 'here'
+                updateme: {this: be: complex: for: sure: 1}
+            newDoc =
+                revision: content: 100000
+                content: 'here again'
+                updateme: {this: be: simple: inevitably: 1}
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', insertDoc]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = insertDoc._id
+                update = committed.transaction "test", {}
+                update.instructions.push
+                    name: 'db.updateOneDoc'
+                    arguments: ['instructionsTest', newDoc, oldDoc]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({content:"here again"}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            should.exist docsInDB[0]._id
+                            delete docsInDB[0]._id
+                            docsInDB[0].should.deep.equal
+                                revision:
+                                    content: 2
+                                    otherContent: 1
+                                content: 'here again'
+                                updateme: {this: be: simple: inevitably: 1}
+                                otherContent: "don't touch this"
+                            done()
+
+
+        it 'updateOneDoc should handle setting a nested key to null', (done) ->
+            insertDoc =
+                content: 'here'
+                updateme: {this: be: complex: for: sure: 1}
+                otherContent: "don't touch this"
+            oldDoc =
+                revision: content: 1
+                content: 'here'
+                updateme: {this: be: complex: for: sure: 1}
+            newDoc =
+                revision: content: 100000
+                content: 'here again'
+                updateme: {this: be: complex: for: sure: null}
+            insert = committed.transaction "test"
+            insert.instructions.push
+                name: 'db.insert'
+                arguments: ['instructionsTest', insertDoc]
+            committed.enqueue insert, (err, status) ->
+                should.not.exist err
+                status.should.be.string 'Committed'
+                oldDoc._id = newDoc._id = insertDoc._id
+                update = committed.transaction "test", {}
+                update.instructions.push
+                    name: 'db.updateOneDoc'
+                    arguments: ['instructionsTest', newDoc, oldDoc]
+                committed.enqueue update, (err,status) ->
+                    should.not.exist err
+                    status.should.be.string 'Committed'
+                    _db.collection 'instructionsTest', (err, collection) ->
+                        collection.find({content:"here again"}).toArray (err, docsInDB) ->
+                            docsInDB.length.should.equal 1
+                            should.exist docsInDB[0]._id
+                            delete docsInDB[0]._id
+                            docsInDB[0].should.deep.equal
+                                revision:
+                                    content: 2
+                                    otherContent: 1
+                                content: 'here again'
+                                updateme: {this: be: complex: for: sure: null}
+                                otherContent: "don't touch this"
+                            done()
+
+
+
         it 'updateManyOp should update many documents', (done) ->
             docs = ( {i: i} for i in [1,2,3] )
             insert = committed.transaction "test", {}, [

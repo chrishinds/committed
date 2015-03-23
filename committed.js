@@ -1066,50 +1066,54 @@
   };
 
   _mongoOpsFromTo = function(mongoOps, fromDoc, toDoc) {
-    var fromFlattened, key, newDotPaths, oldDotPaths, path, toFlattened, unsetDotPaths, value, _i, _j, _len, _len1, _ref;
-    toFlattened = _mongoFlatten(toDoc);
-    fromFlattened = _mongoFlatten(fromDoc);
-    for (_i = 0, _len = toFlattened.length; _i < _len; _i++) {
-      _ref = toFlattened[_i], key = _ref[0], value = _ref[1];
-      if (key.indexOf('revision.') !== 0) {
-        mongoOps.$set[key] = value;
-      }
-    }
-    newDotPaths = (function() {
-      var _ref1, _results;
-      _ref1 = mongoOps.$set;
+    var mongoMissing, path, unsetDotPaths, _i, _len;
+    (function() {
+      var key, value, _i, _len, _ref, _ref1, _results;
+      _ref = _mongoFlatten(toDoc);
       _results = [];
-      for (key in _ref1) {
-        value = _ref1[key];
-        _results.push(key);
-      }
-      return _results;
-    })();
-    oldDotPaths = (function() {
-      var _j, _len1, _ref1, _results;
-      _results = [];
-      for (_j = 0, _len1 = fromFlattened.length; _j < _len1; _j++) {
-        _ref1 = fromFlattened[_j], key = _ref1[0], value = _ref1[1];
+      for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+        _ref1 = _ref[_i], key = _ref1[0], value = _ref1[1];
         if (key.indexOf('revision.') !== 0) {
-          _results.push(key);
+          _results.push(mongoOps.$set[key] = value);
         }
       }
       return _results;
     })();
-    unsetDotPaths = (function() {
-      var _j, _len1, _results;
-      _results = [];
-      for (_j = 0, _len1 = oldDotPaths.length; _j < _len1; _j++) {
-        path = oldDotPaths[_j];
-        if (__indexOf.call(newDotPaths, path) < 0) {
-          _results.push(path);
+    mongoMissing = function(from, to) {
+      var flattened, key, otherKey, results, value, _i, _len;
+      results = [];
+      for (key in from) {
+        value = from[key];
+        if (key !== void 0) {
+          if ((value == null) || typeof value !== 'object' || BuiltInObjects.some(function(x) {
+            return value instanceof x;
+          }) || MongoObjects.some(function(x) {
+            return value instanceof x;
+          })) {
+            if (to[key] === void 0) {
+              results.push(key);
+            }
+          } else {
+            if (to[key] === void 0) {
+              results.push(key);
+            } else {
+              flattened = mongoMissing(value, to[key]);
+              for (_i = 0, _len = flattened.length; _i < _len; _i++) {
+                otherKey = flattened[_i];
+                results.push("" + key + "." + otherKey);
+              }
+            }
+          }
         }
       }
-      return _results;
-    })();
-    for (_j = 0, _len1 = unsetDotPaths.length; _j < _len1; _j++) {
-      path = unsetDotPaths[_j];
-      mongoOps.$unset[path] = 1;
+      return results;
+    };
+    unsetDotPaths = mongoMissing(fromDoc, toDoc);
+    for (_i = 0, _len = unsetDotPaths.length; _i < _len; _i++) {
+      path = unsetDotPaths[_i];
+      if (path.indexOf('revision.') !== 0) {
+        mongoOps.$unset[path] = 1;
+      }
     }
     return delete mongoOps.$set._id;
   };

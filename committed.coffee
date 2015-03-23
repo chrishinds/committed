@@ -836,18 +836,34 @@ _processRevisions = (instructionName, config, collectionName, revisions) ->
     return [null, revisionNames, revisionNumbers]
 
 _mongoOpsFromTo = (mongoOps, fromDoc, toDoc) ->
-    toFlattened = _mongoFlatten(toDoc)
-    fromFlattened = _mongoFlatten(fromDoc)
     #the documents could contain too many revision keys, so don't copy these. 
-    mongoOps.$set[key] = value for [key, value] in toFlattened when key.indexOf('revision.') isnt 0
-    #make a list of fields to unset
-    newDotPaths = ( key for key, value of mongoOps.$set )
-    oldDotPaths = ( key for [key, value] in fromFlattened when key.indexOf('revision.') isnt 0 )
-    unsetDotPaths = ( path for path in oldDotPaths when path not in newDotPaths )
-    for path in unsetDotPaths
+    do () -> #because key and value will be in local scope and will later interfere with those in mongoMissing
+        mongoOps.$set[key] = value for [key, value] in _mongoFlatten(toDoc) when key.indexOf('revision.') isnt 0
+
+    mongoMissing = (from, to) ->
+        results = []
+        for key, value of from when key isnt undefined 
+            #javascript you are so weak.
+            if not value? or typeof value isnt 'object' or BuiltInObjects.some((x)-> value instanceof x) or MongoObjects.some((x)->value instanceof x)
+                #then we have a leaf
+                if to[key] is undefined then results.push key
+            else
+                #we have a node
+                if to[key] is undefined
+                    results.push key
+                else
+                    flattened = mongoMissing(value, to[key])
+                    for otherKey in flattened
+                        results.push "#{key}.#{otherKey}"
+        return results
+
+    unsetDotPaths = mongoMissing(fromDoc, toDoc)
+
+    for path in unsetDotPaths when path.indexOf('revision.') isnt 0
         mongoOps.$unset[path] = 1
     #remove _id from $set, we dont want to update this
     delete mongoOps.$set._id
+
 
 _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done) ->
     #work out the instruction name from the onlyOne, isUpsert booleans

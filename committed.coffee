@@ -350,14 +350,18 @@ _checkTransaction = (transaction) ->
     if typeof(transaction) isnt 'function'
         for i in transaction.instructions
             for key of i
-                if key not in ['name', 'arguments'] 
+                if key not in ['name', 'arguments']
                     return new Error("can't queue a transaction with an instruction that contains key '#{key}', instructions can contain only 'name' and 'arguments' keys")
         if not _instructionsExistFor(transaction)
             return new Error("Can't queue a transaction for which either its instructions, rollback instructions, or implied auto rollback instructions don't exist in the registry")
         if transaction.rollback? and transaction.rollback.length isnt transaction.instructions.length
             return new Error("Can't queue a transaction with an explicit rollback instructions whose length is not the same as its instructions array")
-        if transaction.after? and not transaction.after.every( (x) -> x.status? and x.status is 'Queued' )
-            return new Error("Can't queue a transaction chain where one transaction is at a status other than Queued")
+        if transaction.after?
+            if not transaction.after.every( (x) -> x.status? and x.status is 'Queued' )
+                return new Error("Can't queue a transaction chain where one transaction is at a status other than Queued")
+            for after in transaction.after
+                result = _checkTransaction(after)
+                if result? then return result
     else
         if not transaction.fnType? or transaction.fnType not in ['reader', 'writer']
             return new Error("can't queue a function which doesn't have a fnType of 'reader' or 'writer'")

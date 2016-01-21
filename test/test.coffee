@@ -2047,3 +2047,19 @@ describe 'Committed', ->
                         doc.t.should.equal docInDB.t
                         doc.q.should.equal docInDB.q
                         done()
+
+        it 'should fail a chain where a transaction doesn\'t pass the regex', (done) ->
+            doc = {t:'t', q:'q'}
+            transaction1 = committed.transaction "foo", {}, [
+                {name: 'db.insert', arguments: ['regexTest', doc]}
+            ]
+            transaction2 = committed.transaction "bar", {}, [
+                {name: 'db.insert', arguments: ['regexTest', doc]}
+            ]
+            transaction3 = committed.transaction "baz", {}, [
+                {name: 'db.insert', arguments: ['regexTest', doc]}
+            ]
+            chain = committed.chain [transaction1, transaction2, transaction3]
+            committed.enqueue chain, (err, status) ->
+                err.toString().should.equal "Error: transaction.queue name baz does not match required regex /^foo$|^bar$/"
+                done()

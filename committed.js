@@ -406,7 +406,7 @@
   };
 
   _checkTransaction = function(transaction) {
-    var i, key, _i, _len, _ref, _ref1;
+    var after, i, key, result, _i, _j, _len, _len1, _ref, _ref1, _ref2;
     if ((transaction.status != null) && transaction.status !== 'Queued') {
       return new Error("Can't queue a transaction which is at a status other than Queued (or null)");
     }
@@ -429,13 +429,23 @@
       if ((transaction.rollback != null) && transaction.rollback.length !== transaction.instructions.length) {
         return new Error("Can't queue a transaction with an explicit rollback instructions whose length is not the same as its instructions array");
       }
-      if ((transaction.after != null) && !transaction.after.every(function(x) {
-        return (x.status != null) && x.status === 'Queued';
-      })) {
-        return new Error("Can't queue a transaction chain where one transaction is at a status other than Queued");
+      if (transaction.after != null) {
+        if (!transaction.after.every(function(x) {
+          return (x.status != null) && x.status === 'Queued';
+        })) {
+          return new Error("Can't queue a transaction chain where one transaction is at a status other than Queued");
+        }
+        _ref1 = transaction.after;
+        for (_j = 0, _len1 = _ref1.length; _j < _len1; _j++) {
+          after = _ref1[_j];
+          result = _checkTransaction(after);
+          if (result != null) {
+            return result;
+          }
+        }
       }
     } else {
-      if ((transaction.fnType == null) || ((_ref1 = transaction.fnType) !== 'reader' && _ref1 !== 'writer')) {
+      if ((transaction.fnType == null) || ((_ref2 = transaction.fnType) !== 'reader' && _ref2 !== 'writer')) {
         return new Error("can't queue a function which doesn't have a fnType of 'reader' or 'writer'");
       }
     }
@@ -943,7 +953,7 @@
               transaction = transactionOrString;
             }
             if (transaction.queue !== transactionOrFunction.queue) {
-              return done(new Error("transaction producing function assigned to a different queue from that of the transaction it produced \n(" + transaction.queue + " isnt " + transactionOrFunction.queue + ")"), transaction);
+              return done(new Error("transaction producing function assigned to a different queue from that of the transaction it produced\n(" + transaction.queue + " isnt " + transactionOrFunction.queue + ")"), transaction);
             }
             error = _checkTransaction(transaction);
             if (error != null) {
@@ -951,7 +961,7 @@
             }
             if ((transactionOrFunction.before != null) || (transactionOrFunction.after != null)) {
               if ((transaction.before != null) || (transaction.after != null)) {
-                return done(new Error(" \na committed.writer which was part of a chain has produced a transaction object which is\nalso part of a chain, it is not clear how to act sequentially on two chains."), transaction);
+                return done(new Error("a committed.writer which was part of a chain has produced a transaction object which is\nalso part of a chain, it is not clear how to act sequentially on two chains."), transaction);
               }
               transaction.before = transactionOrFunction.before;
               transaction.after = transactionOrFunction.after;
@@ -1231,7 +1241,7 @@
             if (!matches.every(function(x) {
               return x;
             })) {
-              transaction.execution.info.push("" + instructionName + " failed to find documents to match the required revisions. \nFound: " + (JSON.stringify(state.updated)) + ". \nRequired: " + (JSON.stringify(revisionNumbers)) + ".");
+              transaction.execution.info.push("" + instructionName + " failed to find documents to match the required revisions.\nFound: " + (JSON.stringify(state.updated)) + ".\nRequired: " + (JSON.stringify(revisionNumbers)) + ".");
               return done(null, false);
             } else {
               return executeUpdate();

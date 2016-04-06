@@ -744,7 +744,7 @@
   };
 
   _updateTransactionStatus = function() {
-    var done, fromStatus, optional, results, rollbackResults, toStatus, transaction, updatedAt, _i;
+    var done, fromStatus, optional, results, rollbackResults, toStatus, transaction, update, updatedAt, _i;
     transaction = arguments[0], fromStatus = arguments[1], toStatus = arguments[2], optional = 5 <= arguments.length ? __slice.call(arguments, 3, _i = arguments.length - 1) : (_i = 3, []), done = arguments[_i++];
     if (optional != null) {
       results = optional[0], rollbackResults = optional[1];
@@ -756,19 +756,27 @@
     if (rollbackResults != null) {
       transaction.execution.rollback = rollbackResults;
     }
-    return _transactionsCollection.update({
-      _id: transaction._id,
-      status: fromStatus
-    }, {
+    update = {
       $set: {
         status: toStatus,
         softwareVersion: _softwareVersion,
         enqueuedAt: transaction.enqueuedAt,
         startedAt: transaction.startedAt,
-        lastUpdatedAt: updatedAt,
-        execution: transaction.execution
+        lastUpdatedAt: updatedAt
       }
-    }, {
+    };
+    if (toStatus === 'Committed') {
+      update.$unset = {
+        rollback: 1,
+        execution: 1
+      };
+    } else {
+      update.$set.execution = transaction.execution;
+    }
+    return _transactionsCollection.update({
+      _id: transaction._id,
+      status: fromStatus
+    }, update, {
       w: 1,
       journal: true
     }, function(err, updated) {

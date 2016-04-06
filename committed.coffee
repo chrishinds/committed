@@ -39,14 +39,14 @@ _inSeries = (cursor, fn, done) ->
     return async.doUntil(
         (itemDone) ->
             cursor.nextObject (err, item) ->
-                if err? 
+                if err?
                     return itemDone(err)
                 if not item?
                     finished = true
                     return itemDone()
                 else
                     return fn(item, itemDone)
-        , () -> 
+        , () ->
             finished
         , (err) ->
             done(err)
@@ -61,13 +61,13 @@ _inSeries = (cursor, fn, done) ->
 #want in there
 
 exports.start = (config, done) ->
-    if not config?.db? 
+    if not config?.db?
         return done( new Error("committed must be supplied with at least a config.db during start") )
-        
+
     if not config?.MongoNativeModule?
         return done( new Error("commited must be supplied with an MongoNativeModule, like require('mongodb')") )
     ObjectID = config.MongoNativeModule.ObjectID
-    try 
+    try
         new ObjectID()
     catch e
         return done( new Error("commited must be supplied with an MongoNativeModule, like require('mongodb')") )
@@ -87,7 +87,7 @@ exports.start = (config, done) ->
     _pendingImmediate = []
 
     #re-create the _queue object, initially this should just contain the
-    #GlobalLock queue, others will be created as needed. 
+    #GlobalLock queue, others will be created as needed.
     _queues =
         #globallock has a special worker function
         GlobalLock: async.queue(commitWithGlobalLock, 1)
@@ -136,7 +136,7 @@ exports.start = (config, done) ->
         #within the queue take the transactions in ascending sequence order.
         #Any transactions resulting from a committed.immediately will have a
         #position of -1 so will be attempted first. Execution is stricly sequential.
-        _inSeries( 
+        _inSeries(
             _transactionsCollection.find({status: 'Processing'}, {sort: position: 1})
             , (transaction, transactionDone) ->
                 rollback transaction, (err, result) ->
@@ -152,7 +152,7 @@ exports.start = (config, done) ->
         #and before it is shifted so that the next transaction is in the head
         #position. Find such chains, shift them, write them back, execute in
         #the next task
-        _inSeries( 
+        _inSeries(
             _transactionsCollection.find({status:'Committed', "after.0.status":'Queued'})
             , (transaction, transactionDone) ->
                 _shiftChain(transaction)
@@ -204,7 +204,7 @@ _drainQueues = (exceptQueues, done) ->
     # wait until every _queue's _queueLength is 0, and there are no immediate transactions in progress, check every 10ms
     async.until(
         () ->
-            ( count is 0 for name, count of _queueLength when name not in exceptQueues).every((x) -> x) and _immediateCounter is 0 
+            ( count is 0 for name, count of _queueLength when name not in exceptQueues).every((x) -> x) and _immediateCounter is 0
         , (untilBodyDone) ->
             setTimeout untilBodyDone, 10
         , (err) ->
@@ -246,9 +246,9 @@ _enqueueAndHandleChains = (transaction, done) ->
     lastStatus = null
     chainGuard = null
     decrementQueueCounter = (queueName) ->
-        if _queueLength[queueName]? 
+        if _queueLength[queueName]?
             _queueLength[queueName] -= 1
-            if _queueLength[queueName] is 0 
+            if _queueLength[queueName] is 0
                 delete _queueLength[queueName] #free the memory
 
     async.doWhilst(
@@ -287,9 +287,9 @@ _enqueueAndHandleChains = (transaction, done) ->
                     chainGuard = originalTransaction.queue
                 #accumulate any results from the transaction
                 results.push(result) for result in newResults
-                #remember the status 
+                #remember the status
                 lastStatus = status
-                #yield to the event-loop to let any drain run, then see if we need to repeat 
+                #yield to the event-loop to let any drain run, then see if we need to repeat
                 setImmediate bodyDone, err
         , () ->
             #this is the loop guard. we need to check whether the transaction
@@ -304,7 +304,7 @@ _enqueueAndHandleChains = (transaction, done) ->
                         return true
                     else
                         #we are done with this chain, just return what we've got
-                        return false 
+                        return false
                 else
                     if not _hasBefore(transaction)
                         #then we are the first in the chain, so simply callback and let the client retry if they wish
@@ -322,7 +322,7 @@ _enqueueAndHandleChains = (transaction, done) ->
                 decrementQueueCounter(chainGuard)
                 chainGuard = null
 
-            if err? 
+            if err?
                 return done err, lastStatus, results...
 
             else if transaction.fnType is 'reader'
@@ -409,7 +409,7 @@ _enqueue = (transactionArg, done) ->
         if not transaction.queue?.length
             return done( new Error("must have a transaction.queue parameter to use committed.enqueue"), null)
         error = _checkTransaction(transaction)
-        if error? then return done( error, null ) 
+        if error? then return done( error, null )
 
         transaction.status = 'Queued'
         #important not to involve 'stopped' or 'started' in this conditional
@@ -454,7 +454,7 @@ _immediately = (transactionArg, done) ->
         if transaction.queue?
             return done( new Error("Can't call committed.immediately on a transaction which has a queue defined for it") )
         error = _checkTransaction(transaction)
-        if error? then return done( error, null ) 
+        if error? then return done( error, null )
 
         if _state isnt 'locked'
             transaction.status = 'Queued'
@@ -470,7 +470,7 @@ _withGlobalLock = (transactionArg, done) ->
         if transaction.queue isnt "GlobalLock"
             return done( new Error("Can't call committed.withGlobalLock for a transaction that names a queue other than 'GlobalLock'"), null)
         error = _checkTransaction(transaction)
-        if error? then return done( error, null ) 
+        if error? then return done( error, null )
         transaction.enqueuedAt = new Date()
         return _enqueueAndHandleChains transaction, done
 
@@ -481,14 +481,14 @@ exports.withGlobalLock = (transaction, done) ->
     # magic "GlobalLock" queue, with special drain function, that's set up during start
     #because exports.enqueue will yield to the event loop before pushing to
     #async.queue, we should also, otherwise we may inadvertently overtake a
-    #previous call. setImmediate will preserve order. 
+    #previous call. setImmediate will preserve order.
     setImmediate () ->
-        if _state is 'stopped' 
+        if _state is 'stopped'
             return done( new Error("unable to execute transaction with Global Lock, committed was at state '#{_state}'"), null)
             return done(null, 'Failed')
         else
             #then this transaction is good to proceed
-            transaction.status = "Queued" 
+            transaction.status = "Queued"
             _state = 'locked'
             return _withGlobalLock(transaction, done)
 
@@ -499,7 +499,7 @@ _registryFind = (name) ->
         found = found[key]
         if not found?
             return null
-    return found 
+    return found
 
 applyToRegistered = (name, fnArgs) ->
     found = _registry
@@ -545,7 +545,7 @@ _pushTransactionError = (transaction, error, optional..., done) ->
         [results, rollbackResults] = optional
     # builtin errors don't serialise to json nicely
     if error.name? and error.stack? and error.message?
-        serialisedError = 
+        serialisedError =
             name: error.name
             message: error.message
             stack: error.stack
@@ -577,15 +577,25 @@ _updateTransactionStatus = (transaction, fromStatus, toStatus, optional..., done
         transaction.execution.results = results
     if rollbackResults?
         transaction.execution.rollback = rollbackResults
-    _transactionsCollection.update {_id: transaction._id, status: fromStatus},
-        {$set: {
+    update = {
+        $set: {
             status: toStatus
             softwareVersion: _softwareVersion
             enqueuedAt: transaction.enqueuedAt
             startedAt: transaction.startedAt
             lastUpdatedAt: updatedAt
-            execution: transaction.execution
-        }},
+        }
+    }
+    if toStatus is 'Committed'
+        # for transactions that reach Committed state, we never need to look at
+        # rollback or execution again. Delete them to save storage space.
+        update.$unset = {
+            rollback: 1
+            execution: 1
+        }
+    else update.$set.execution = transaction.execution
+
+    _transactionsCollection.update {_id: transaction._id, status: fromStatus}, update,
         {w:1, journal: true}, (err, updated) ->
             switch
                 when err?
@@ -625,7 +635,7 @@ _mongoFlatten = (obj) ->
         else
             flattened = _mongoFlatten(value)
             for [otherKey, otherValue] in flattened
-                results.push ["#{key}.#{otherKey}", otherValue] 
+                results.push ["#{key}.#{otherKey}", otherValue]
     return results
 
 
@@ -634,7 +644,7 @@ rollback = (transaction, done) ->
     if transaction.status isnt 'Processing'
         return done( new Error("can't rollback a transaction that isn't at 'Processing' status"), null)
     #have we got a list of results from instruction execution to work with? if so we don't need to execute every rollback instruction
-    #if not we must execute every rollback instruction to be safe. 
+    #if not we must execute every rollback instruction to be safe.
     rollbackLength = if transaction.execution.results? then transaction.execution.results.length else transaction.instructions.length
     #we may not have executed everything in the original list of instructions
     rollbackInstructions = transaction.rollback.slice(0, rollbackLength)
@@ -693,9 +703,9 @@ _hasBefore = (transaction) ->
 _shiftChain = (transaction) ->
     nextTransaction = transaction.after.shift()
     copyTransaction = {}
-    for key, value of transaction 
+    for key, value of transaction
         if key not in ['before', 'after', '_id', 'enqueuedAt']
-            copyTransaction[key] = value 
+            copyTransaction[key] = value
             transaction[key] = undefined
     transaction.before.push copyTransaction
     for key, value of nextTransaction
@@ -714,7 +724,7 @@ commit = (transactionOrFunction, done) ->
                 #a reader function passes it's err and results straight to the callback
                 done(err, transactionOrFunction, null, results...)
         if transactionOrFunction.fnType is 'writer'
-            #if its a writer function then we should look at what the callback returns 
+            #if its a writer function then we should look at what the callback returns
             return transactionOrFunction (err, transactionOrString, results...) ->
                 #a writer function may either return a transaction, a chain, or a string
                 if (typeof(transactionOrString) is 'string' or transactionOrString instanceof String or not transactionOrString?)
@@ -732,35 +742,35 @@ commit = (transactionOrFunction, done) ->
                     #ensure that the queue specified on the original function is the same as that of the produced transaction
                     if transaction.queue isnt transactionOrFunction.queue
                         return done( new Error("""
-                            transaction producing function assigned to a different queue from that of the transaction it produced 
+                            transaction producing function assigned to a different queue from that of the transaction it produced
                             (#{transaction.queue} isnt #{transactionOrFunction.queue})
                             """), transaction )
                     #make the same checks against the transaction as we would have done in committed.enqueue
                     error = _checkTransaction(transaction)
-                    if error? 
-                        return done( error, transaction ) 
+                    if error?
+                        return done( error, transaction )
                     #a writer function may have had a chain
                     if transactionOrFunction.before? or transactionOrFunction.after?
-                        if transaction.before? or transaction.after? 
+                        if transaction.before? or transaction.after?
                             #then we have produced a chain as a result of the
                             #writer function, in this situation it isn't clear
                             #how to resolve the two chains into a sequential
                             #order, so error
-                            return done( new Error(""" 
+                            return done( new Error("""
                                 a committed.writer which was part of a chain has produced a transaction object which is
                                 also part of a chain, it is not clear how to act sequentially on two chains.
                                 """), transaction)
-                        #copy the writer function's chain onto the object for onward processing. 
+                        #copy the writer function's chain onto the object for onward processing.
                         transaction.before = transactionOrFunction.before
                         transaction.after = transactionOrFunction.after
                     #finally, a writer should have had an enqueued field, which should be transfered onto the resulting transaction
                     transaction.enqueuedAt = transactionOrFunction.enqueuedAt
                     #if everything still looks good then do the commit.
                     return _commitCore transaction, results..., done
-    else 
+    else
         #we must have been given a transaction object
         return _commitCore transactionOrFunction, done
- 
+
 
 
 #commits a single transaction
@@ -801,7 +811,7 @@ _commitCore = (transaction, writerResults..., done) ->
                         writerResults.push(result) for result in transactionResults
                         return done(err, transaction, 'Committed', writerResults...)
                 else
-                    #the transaction has (legitimately) failed, write the statuses, and prepare for rollback 
+                    #the transaction has (legitimately) failed, write the statuses, and prepare for rollback
                     _updateTransactionStatus transaction, transaction.status, transaction.status, statuses, null, "legitimate transaction failure", (statusErr) ->
                         #log these errors but don't pass them up
                         if err? then console.error "error saving transaction status change on legitimate failure: #{err}"
@@ -840,13 +850,13 @@ _processRevisions = (instructionName, config, collectionName, revisions) ->
     return [null, revisionNames, revisionNumbers]
 
 _mongoOpsFromTo = (mongoOps, fromDoc, toDoc) ->
-    #the documents could contain too many revision keys, so don't copy these. 
+    #the documents could contain too many revision keys, so don't copy these.
     do () -> #because key and value will be in local scope and will later interfere with those in mongoMissing
         mongoOps.$set[key] = value for [key, value] in _mongoFlatten(toDoc) when key.indexOf('revision.') isnt 0
 
     mongoMissing = (from, to) ->
         results = []
-        for key, value of from when key isnt undefined 
+        for key, value of from when key isnt undefined
             #javascript you are so weak.
             if not value? or typeof value isnt 'object' or BuiltInObjects.some((x)-> value instanceof x) or MongoObjects.some((x)->value instanceof x)
                 #then we have a leaf
@@ -882,7 +892,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
 
     if not onlyOne and revisionNumbers?
         return done( new Error("can't #{instructionName} with a revisions object that specifies exact revision numbers, that's only possible for singe updates"))
-    #can't proceed if we've already got an $inc updateOps that involves the revisions 
+    #can't proceed if we've already got an $inc updateOps that involves the revisions
     if updateOps.$inc? and revisionNames.some((name) -> updateOps.$inc["revision.#{name}"])
         return done(new Error("can't #{instructionName} with revisions #{revisionNames} when there are already $inc operations on the revision sub-document"))
     #sames true of the selector if we're going to match an exact version number, this isnt really that precise a check, but it's at least a basic check
@@ -915,7 +925,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
             if (onlyOne and not isUpsert and docs.length isnt 1) or (isUpsert and docs.length > 1)
                 #the instruction has failed, we must find exactly one doc
                 transaction.execution.info.push "#{instructionName} can update only one document, using #{JSON.stringify mongoSelector} #{docs.length} were found"
-                return done(null, false) 
+                return done(null, false)
             else if isUpsert and docs.length is 0
                 #then we are effectively about to do an insert, so record this
                 #in the state what we need is to get hold of the id that's
@@ -940,7 +950,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
 
             _updateTransactionState transaction, (err) ->
                 if err? then return done(err, null)
-                #now we're safe for a rollback 
+                #now we're safe for a rollback
 
                 executeUpdate = () ->
                     options = _makeUpdateOptions(onlyOne, isUpsert)
@@ -953,7 +963,7 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
                     #used to ensure isolation.
                     collection.update mongoSelector, mongoUpdateOps, options, (err, updated) ->
                         if err? then return done(err, null)
-                        if (onlyOne or isUpsert) and updated isnt 1 
+                        if (onlyOne or isUpsert) and updated isnt 1
                             transaction.execution.info.push """
                                 #{instructionName} can update only one document, using #{JSON.stringify mongoSelector} #{updated} were updated
                                 """
@@ -970,8 +980,8 @@ _updateOpInstruction = (onlyOne, isUpsert, config, transaction, state, collectio
                     if not matches.every((x)->x)
                         #we have failed to meet the required version number
                         transaction.execution.info.push """
-                            #{instructionName} failed to find documents to match the required revisions. 
-                            Found: #{JSON.stringify state.updated}. 
+                            #{instructionName} failed to find documents to match the required revisions.
+                            Found: #{JSON.stringify state.updated}.
                             Required: #{JSON.stringify revisionNumbers}.
                             """
                         return done(null, false)
@@ -1009,7 +1019,7 @@ _updateOpRollback = (onlyOne, isUpsert, config, transaction, state, collectionNa
                 serializeFunctions: false
             return collection.remove {_id: state.insertedId}, options, (err, result) ->
                 return done(err)
-            
+
         else
             #then there was an update; we wrote ids and revisions before the
             #update, can we still find these documents? we could easily have
@@ -1033,7 +1043,7 @@ _updateOpRollback = (onlyOne, isUpsert, config, transaction, state, collectionNa
                         mongoRollbackOps.$inc["revision.#{revisionName}"] = -1 for revisionName in revisionNames
                         #take the projection that was stored and convert it to mongo dot notation
                         flattened = _mongoFlatten(doc)
-                        #the stored projection could contain too many revision keys, so don't copy these. 
+                        #the stored projection could contain too many revision keys, so don't copy these.
                         #also don't update _id.
                         mongoRollbackOps.$set[key] = value for [key, value] in flattened when key.indexOf('revision.') isnt 0
                         #make a list of fields to unset
@@ -1107,7 +1117,7 @@ exports.db =
     # thereof. revisions is optional, if present should be an array containing
     # the subschemas which are to be established in each document's .revision
     # subdoc. revisions may only contain subschemas mentioned in the
-    # config.revisions.collectionName object. 
+    # config.revisions.collectionName object.
     insert: (config, transaction, state, [collectionName, documents, revisions, etc...], done) ->
         if etc.length isnt 0 then return done(new Error("too many values passed to insert"))
         if not (collectionName? and documents?) then return done(new Error("null or missing argument to insert command"))
@@ -1127,7 +1137,7 @@ exports.db =
             #inserts should _id every document, otherwise accurate rollback won't be possible, moreover these ids need to be saved somewhere
             state.ids = []
             for d in documents
-                if d._id? 
+                if d._id?
                     state.ids.push d._id
                 else
                     d._id = _pkFactory.createPk()
@@ -1161,7 +1171,7 @@ exports.db =
                 #then we never got to the insert, so there's nothing for the rollback to do
                 return done(null, true)
             else
-                #where documents lack an _id, we have to fill this in from what was generated during the insert instruction. 
+                #where documents lack an _id, we have to fill this in from what was generated during the insert instruction.
                 if not Array.isArray(documents) then documents = [documents]
                 if documents.length isnt state.ids.length
                     return done(new Error("during rollback, number of documents to insert doesnt match the number of ids generated during insert"), false)
@@ -1176,7 +1186,7 @@ exports.db =
 
 
     #updateOneOp is an update operation on one document using mongo
-    #operations. revisions is optional, if  present then it needs to be either 
+    #operations. revisions is optional, if  present then it needs to be either
     # 1. a string containing revisions names which we should increment
     # 2. an array of such strings
     # 3. an object whose key,value are a revision name and revision number respectively
@@ -1193,7 +1203,7 @@ exports.db =
         return _updateOpInstruction(true, true, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)
 
     upsertOneOpRollback: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
-        return _updateOpRollback(true, true, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)        
+        return _updateOpRollback(true, true, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)
 
     updateManyOp: (config, transaction, state, [collectionName, selector, updateOps, rollbackProjector, revisions, etc...], done) ->
         return _updateOpInstruction(false, false, config, transaction, state, collectionName, selector, updateOps, rollbackProjector, revisions, etc, done)
@@ -1247,7 +1257,7 @@ exports.db =
                     selector = {_id: oldPartialDocument._id}
                     collection.update selector, mongoOps, updateOneOptions, (err, updated) ->
                         if err? then return done(err, null)
-                        if updated isnt 1 
+                        if updated isnt 1
                             transaction.execution.info.push """
                                 updateOneDoc must update exactly one document, using [selector, ops] = #{JSON.stringify [selector, mongoOps]} #{updated} were updated
                                 """
@@ -1292,7 +1302,7 @@ exports.db =
                         updateSelector = {_id: oldPartialDocument._id}
                         collection.update updateSelector, mongoOps, updateOneOptions, (err, updated) ->
                                 if err? then return done(err, null)
-                                if updated isnt 1 
+                                if updated isnt 1
                                     transaction.execution.info.push """
                                         updateOneDocRollback must update exactly one document, using [selector, ops] = #{JSON.stringify [updateSelector, mongoOps]} #{updated} were updated
                                         """
@@ -1306,7 +1316,7 @@ exports.db =
 # like which user or which REST route executed the transaction.
 
 exports.transaction = (queueName, additionalFields, instructions, rollback) ->
-    t = 
+    t =
         softwareVersion: _softwareVersion
         queue: queueName
         position: null

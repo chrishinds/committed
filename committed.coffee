@@ -298,6 +298,8 @@ _enqueueAndHandleChains = (transaction, done) ->
             if isChain
                 #then we have a chain, handle it
                 if lastStatus is 'Committed'
+                    delete transaction.rollback
+                    delete transaction.execution
                     if _hasAfter(transaction)
                         #then there are transaction yet to execute, we should move onto the next item in the chain
                         _shiftChain(transaction)
